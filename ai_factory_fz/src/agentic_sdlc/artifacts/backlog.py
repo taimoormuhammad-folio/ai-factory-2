@@ -139,6 +139,13 @@ class Backlog(BaseModel):
             for wid in m.work_item_ids:
                 if wid not in items:
                     errors.append(f"Milestone {m.id} lists unknown work item {wid}")
+        # Milestones are built in order: an item must not wait for an item in a later milestone.
+        position = {wid: i for i, m in enumerate(self.milestones) for wid in m.work_item_ids}
+        for w in self.work_items:
+            for dep in w.depends_on:
+                if w.id in position and dep in position and position[dep] > position[w.id]:
+                    errors.append(f"{w.id} (in {self.milestones[position[w.id]].id}) depends on {dep}, which is in a "
+                                  f"later milestone ({self.milestones[position[dep]].id}); move {dep} earlier or {w.id} later")
         scheduled = {wid for m in self.milestones for wid in m.work_item_ids}
         for wid in items.keys() - scheduled:
             errors.append(f"{wid} is not in any milestone")

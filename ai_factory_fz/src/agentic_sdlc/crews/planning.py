@@ -16,6 +16,10 @@ from agentic_sdlc.scope import Scope
 
 PHASE = "planning"
 
+DATA_LAYER = "A complete Prisma schema (prisma_schema) for PostgreSQL."
+NO_DATA_LAYER = ("No database: the API keeps no data of its own, so leave prisma_schema empty. Module "
+                 "entities name the records of the external system the API calls.")
+
 
 def design_architecture(
     runner: TaskRunner,
@@ -25,10 +29,13 @@ def design_architecture(
     revision_notes: str,
     scope: Scope | None = None,
     guardrails: Callable[[ArchitectureDoc], list[str]] | None = None,
+    database: bool = True,
 ) -> TaskResult[ArchitectureDoc]:
-    """`guardrails`: extra checks on the design (see guardrails/architecture.py)."""
+    """`guardrails`: extra checks on the design (see guardrails/architecture.py).
+    `database`: False for stacks whose API keeps no data (no Prisma schema)."""
     scope = scope or Scope()
     extra = guardrails or (lambda a: [])
+    data_errors = ArchitectureDoc.prisma_errors if database else ArchitectureDoc.no_database_errors
     return runner.run(
         PHASE,
         "design_architecture",
@@ -38,11 +45,12 @@ def design_architecture(
             "domain_entities": ", ".join(domain_entities),
             "revision_notes": revision_notes or "(none)",
             "scope_rules": scope.rules_text(),
+            "data_layer": DATA_LAYER if database else NO_DATA_LAYER,
         },
         ArchitectureDoc,
         guardrail=artifact_guardrail(
             ArchitectureDoc,
-            lambda a: a.openapi_errors() + a.prisma_errors() + scope.architecture_errors(a) + extra(a),
+            lambda a: a.openapi_errors() + data_errors(a) + scope.architecture_errors(a) + extra(a),
         ),
     )
 

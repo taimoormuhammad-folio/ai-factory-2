@@ -6,7 +6,7 @@ from agentic_sdlc.registry.profiles import Profile
 from agentic_sdlc.settings import load_config
 
 ALL_AGENTS = [
-    "customer", "spec_writer", "project_manager", "architect", "ui_ux_designer",
+    "customer", "business_analyst", "project_manager", "architect", "ui_ux_designer",
     "backend_developer", "frontend_developer", "qa_engineer", "deployment_engineer",
     "integration_pass", "smoke_tester",
 ]

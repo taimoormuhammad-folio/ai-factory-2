@@ -1,6 +1,7 @@
 """Deterministic project setup (no LLM): runs the profile's scaffold steps for a component."""
 
 import shutil
+from pathlib import Path
 
 from agentic_sdlc.registry.profiles import Component
 from agentic_sdlc.tools.sandbox_exec import SandboxRunner
@@ -19,12 +20,26 @@ def required_runtimes(component: Component) -> list[str]:
     return [r for r in rts if r]
 
 
-def scaffold(name: str, component: Component, workspace: Workspace, sandbox: SandboxRunner) -> list[str]:
-    """Run each step unless its `creates` path exists. Returns a log of what ran."""
+def scaffold(name: str, component: Component, workspace: Workspace, sandbox: SandboxRunner,
+             templates_dir: Path | None = None) -> list[str]:
+    """Run each step unless its `creates` path exists. Returns a log of what ran.
+    `templates_dir`: the profile's templates/ folder, for `template` steps."""
     log: list[str] = []
     for step in component.scaffold:
         if step.creates and workspace.resolve(step.creates).exists():
             log.append(f"skip (exists): {step.creates}")
+            continue
+        if step.template and step.copy_to:
+            src = (templates_dir / step.template) if templates_dir else None
+            if src is None or not src.exists():
+                raise ScaffoldError(f"Scaffold template '{step.template}' for {name} not found in {templates_dir}")
+            dst = workspace.resolve(step.copy_to)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dst)
+            log.append(f"copied template {step.template} -> {step.copy_to}")
             continue
         if step.copy_from and step.copy_to:
             dst = workspace.resolve(step.copy_to)

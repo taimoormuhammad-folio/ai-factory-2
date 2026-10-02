@@ -166,7 +166,7 @@ class Builder:
         if name in self.s.build.scaffolded or not comp.scaffold:
             return None
         try:
-            steps = scaffold(name, comp, self.ws, self.sandbox)
+            steps = scaffold(name, comp, self.ws, self.sandbox, self.profile.root / "templates")
         except ScaffoldError as e:
             self._unavailable[name] = f"project setup failed: {str(e)[:500]}"
             return self._unavailable[name]

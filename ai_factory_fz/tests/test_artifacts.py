@@ -88,3 +88,11 @@ def test_old_backlogs_without_links_still_load():
     w = WorkItem.model_validate({"id": "WI-001", "title": "t", "description": "d", "epic_id": "E-01",
                                  "component": "backend", "story_ids": [], "estimate_points": 2})
     assert w.api_operations == [] and w.risk == "medium"
+
+
+def test_backlog_rejects_dependencies_on_later_milestones(backlog):
+    from agentic_sdlc.artifacts.backlog import Milestone
+    backlog.milestones = [Milestone(id="M1", name="a", goal="g", work_item_ids=["WI-002"]),
+                          Milestone(id="M2", name="b", goal="g", work_item_ids=["WI-001"])]
+    errors = backlog.validation_errors()
+    assert "WI-002 (in M1) depends on WI-001, which is in a later milestone (M2); move WI-001 earlier or WI-002 later" in errors

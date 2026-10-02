@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--runtime", required=True)
+    parser.add_argument("--default-workdir", default="",
+                        help="folder to use when called from the workspace root (e.g. app for flutter)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = [c for c in args.command if c != "--"] if args.command[:1] == ["--"] else args.command
@@ -31,6 +33,8 @@ def main(argv: list[str] | None = None) -> int:
     runner = SandboxRunner(ws, Profile.load(args.profile).sandbox, SandboxMode.DOCKER)
     try:
         workdir = str(Path(os.getcwd()).resolve().relative_to(ws.root)) or "."
+        if workdir == "." and args.default_workdir:
+            workdir = args.default_workdir   # e.g. QA at the root runs `flutter test` in app/
     except ValueError:
         print("Commands must run inside the project workspace", file=sys.stderr)
         return 2

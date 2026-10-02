@@ -123,7 +123,7 @@ def _activity_detail(state: Any, row: Any) -> dict[str, Any]:
             items += [f"Feature: {f}" for f in (brief.key_features or [])[:12]]
             paths = ["docs/product_brief.md"]
 
-    elif agent in ("spec_writer", "analyst") or "spec" in task or "prd" in task or "clarif" in task:
+    elif agent in ("business_analyst", "spec_writer", "analyst") or "spec" in task or "prd" in task or "clarif" in task:
         if state.clarifications:
             title = "Spec clarifications"
             items = [f"Q: {_clip(q.question, 80)} → {_clip(q.answer, 80)}" for q in state.clarifications[:16]]

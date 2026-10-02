@@ -8,7 +8,7 @@ The first target app type is a Flutter e-commerce app with a NestJS + PostgreSQL
 | Milestone | Scope | State |
 |---|---|---|
 | M0 Foundation | model/agent/profile registries, run workspace, file + sandbox tools, checkpoints | done |
-| M1 Discovery | Customer ⇄ Spec writer clarification loop, PRD, **Gate 1** | done |
+| M1 Discovery | Customer ⇄ Business analyst clarification loop, PRD, **Gate 1** | done |
 | M2 Solution & plan | Architect (architecture, OpenAPI, Prisma) → UI/UX (design system) → Project manager (work breakdown + estimates, checked for coverage) → **Gate 2** | done |
 | M3 Build loop | Scaffold, Backend/Frontend devs per work item with build+test checks, QA fix loop per milestone | done |
 | M4 Release | Staging deploy, contract check, Integration pass, Smoke tester, **Gate 3**, production packaging/deploy | done |
@@ -28,7 +28,7 @@ architecture and the release. Any pipeline file can set the same `scope:` limits
 ## Lifecycle order
 
 ```
-Customer ⇄ Spec writer ─► Gate 1 (PRD)
+Customer ⇄ Business analyst ─► Gate 1 (PRD)
   ─► Architect ─► UI/UX designer ─► Project manager (WBS + draft estimates)
   ─► Backend/Frontend/Deployment developers re-estimate their items ─► PM reconciles big gaps
   ─► Gate 2 (solution + plan)

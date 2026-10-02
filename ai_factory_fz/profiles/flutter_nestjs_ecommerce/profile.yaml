@@ -15,7 +15,7 @@ domain_entities: [User, Address, Category, Product, ProductVariant, Cart, CartIt
 
 # Extra context appended to an agent's backstory (paths relative to this folder).
 agent_context:
-  spec_writer: [knowledge/ecommerce_domain.md]
+  business_analyst: [knowledge/ecommerce_domain.md]
   project_manager: [knowledge/ecommerce_domain.md]
   architect:
     - knowledge/ecommerce_domain.md

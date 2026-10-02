@@ -29,6 +29,7 @@ class ScaffoldStep(BaseModel):
     runtime: str | None = None           # defaults to the component's runtime
     workdir: str = "."
     copy_from: str | None = None         # or: copy a workspace file
+    template: str | None = None          # or: copy a file/folder from the profile's templates/ folder
     copy_to: str | None = None
     creates: str | None = None           # skip the step if this path already exists
 
@@ -53,6 +54,7 @@ class ReleaseConfig(BaseModel):
     local_start: str = ""                      # command that runs the API (in the component workdir)
     smoke_command: str = ""                    # runs the smoke suite; gets SMOKE_BASE_URL
     package_commands: list[str] = Field(default_factory=list)  # build release artifacts (API component)
+    staging_notes: str = ""                    # extra instructions for the Deployment engineer
 
 
 class DeviceConfig(BaseModel):
@@ -79,6 +81,9 @@ class Profile(BaseModel):
     description: str = ""
     stack: dict[str, str] = Field(default_factory=dict)
     domain_entities: list[str] = Field(default_factory=list)
+    # False: the API owns no database (e.g. it fronts another system); no Prisma schema, no
+    # data-model guardrails, staging without PostgreSQL.
+    database: bool = True
     agent_context: dict[str, list[str]] = Field(default_factory=dict)
     agent_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     components: dict[str, Component] = Field(default_factory=dict)

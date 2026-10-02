@@ -79,6 +79,9 @@ class ClaudeCodeWorker:
             return None
         bin_dir = self.workspace.root / ".sdlc" / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
+        # Where a toolchain's commands belong when an agent calls them from the workspace root.
+        home = {c.runtime: c.workdir for c in self.agents.profile.components.values()
+                if c.runtime and c.workdir not in (".", "")}
         for rt in runtimes:
             for tool in {shlex.split(c)[0] for c in self.sandbox.config.allowed_commands.get(rt, [])}:
                 script = bin_dir / tool
@@ -86,7 +89,8 @@ class ClaudeCodeWorker:
                     "#!/bin/sh\n"
                     f"exec {shlex.quote(sys.executable)} -m agentic_sdlc.tools.sandbox_cli "
                     f"--workspace {shlex.quote(str(self.workspace.root))} --profile {shlex.quote(self.profile_name)} "
-                    f"--runtime {shlex.quote(rt)} -- {shlex.quote(tool)} \"$@\"\n",
+                    f"--runtime {shlex.quote(rt)} --default-workdir {shlex.quote(home.get(rt, ''))} "
+                    f"-- {shlex.quote(tool)} \"$@\"\n",
                     encoding="utf-8",
                 )
                 script.chmod(0o755)

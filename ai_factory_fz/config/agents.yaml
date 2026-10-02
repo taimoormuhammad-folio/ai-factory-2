@@ -19,8 +19,8 @@ customer:
     commercially realistic decision and say it plainly.
   tools: []
 
-spec_writer:
-  role: Product Specification Writer
+business_analyst:
+  role: Business Analyst
   goal: >
     Turn the customer's needs into a complete, testable product requirements
     document with user stories and Given/When/Then acceptance criteria.

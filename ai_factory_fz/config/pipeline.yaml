@@ -1,7 +1,7 @@
 # Pipeline settings: which phases run, where humans approve, loop limits.
 
 phases:
-  discovery: true     # Customer + Spec writer -> PRD
+  discovery: true     # Customer + Business analyst -> PRD
   planning: true      # Architect -> architecture, OpenAPI, Prisma; then Project manager -> WBS + estimates
   design: true        # UI/UX designer -> design system, screen specs (between Architect and Project manager)
   build: true         # Backend + Frontend + QA loop (see build: below)
@@ -60,7 +60,7 @@ gates:
 gate_mode: console
 
 limits:
-  clarification_rounds: 3   # Spec writer <-> Customer question rounds
+  clarification_rounds: 3   # Business analyst <-> Customer question rounds
   gate_rejections: 3        # revisions allowed per gate before the run stops
   qa_fix_rounds: 3          # QA -> dev fix loops per milestone (M3)
 

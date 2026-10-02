@@ -298,6 +298,10 @@ def check(arch: ArchitectureDoc, profile: Profile, rules: list[str]) -> list[str
     return [problem for rule in rules for problem in RULES[rule](ctx)]
 
 
+DATA_MODEL_RULES = ("C1", "C2", "C3")
+
+
 def checker(profile: Profile, pipeline: dict[str, Any]) -> Callable[[ArchitectureDoc], list[str]]:
-    rules = enabled_rules(pipeline)
+    """Data-model rules (C1-C3) only apply when the profile has a database."""
+    rules = [r for r in enabled_rules(pipeline) if profile.database or r not in DATA_MODEL_RULES]
     return lambda arch: check(arch, profile, rules)

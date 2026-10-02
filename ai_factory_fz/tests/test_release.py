@@ -2,6 +2,7 @@
 
 import json
 import socket
+import subprocess
 import sys
 
 import pytest
@@ -160,14 +161,111 @@ def test_smoke_failure_goes_to_developer_then_passes(tmp_path, prd, backlog):
     assert fix.agent_key == "backend_developer" and "expected 201 got 500" in fix.inputs["problems"]
 
 
-def test_blocking_integration_bugs_exhaust_rounds_and_stop(tmp_path, prd, backlog):
+def test_exhausted_rounds_go_to_the_human_not_a_stop(tmp_path, prd, backlog):
     bug = Bug(id="BUG-1", work_item_id="RELEASE", title="wrong prefix", severity="blocker", steps="s", expected="/api/v1", actual="/")
     bad = QAReport(milestone_id="integration", passed=False, bugs=[bug], summary="bad")
     worker = ScriptedWorker({"integration_review": [bad, bad]})
     r, s, _ = releaser(tmp_path, prd, backlog, worker)
     r.verify()
-    assert s.status == "stopped" and "still failing after 2 round(s)" in s.stop_reason
-    assert not s.release.verified
+    assert s.status == "running" and s.release.failed and not s.release.verified
+    summary = r.gate_summary()
+    assert "FAILED" in summary and "wrong prefix" in summary and "Approving ships the release WITH" in summary
+    r.verify()                                   # resumed while waiting at Gate 3: no new rounds
+    assert s.release.rounds == 2
+    assert "known problems" in r.release_notes("t")
+
+
+def test_gate3_rejection_sends_open_problems_to_each_component(tmp_path, prd, backlog):
+    worker = ScriptedWorker()
+    r, s, _ = releaser(tmp_path, prd, backlog, worker)
+    s.release.open_problems = [["backend", "smoke failed"], ["frontend", "device test failed"]]
+    r.fix_after_rejection("cart total is wrong")
+    fixes = [j for j in worker.jobs if j.task_key == "fix_work_item"]
+    assert [j.agent_key for j in fixes] == ["backend_developer", "frontend_developer"]
+    assert "cart total is wrong" in fixes[1].inputs["problems"] and "device test failed" in fixes[1].inputs["problems"]
+    assert "device test failed" not in fixes[0].inputs["problems"]
+    assert s.release.open_problems == []
+
+
+def test_machine_problems_stop_the_run_without_a_developer_fix(tmp_path, prd, backlog):
+    class Busy(FakeStaging):
+        def start(self):
+            raise StagingError("Port 3999 is already in use by container other-app", environment=True)
+
+    worker = ScriptedWorker()
+    r, s, ws = releaser(tmp_path, prd, backlog, worker, staging=Busy())
+    r.verify()
+    assert s.status == "stopped" and "machine problem" in s.stop_reason and "other-app" in s.stop_reason
+    assert not [j for j in worker.jobs if j.task_key == "fix_work_item"]
+    assert "device checks are disabled" in (ws.root / "reports" / "release_round1.md").read_text()
+
+
+# ---------- staging port ----------
+
+def compose_staging(tmp_path, port_busy, containers, monkeypatch):
+    from agentic_sdlc.release import staging as mod
+    from agentic_sdlc.tools.sandbox_exec import SandboxMode, SandboxRunner
+    profile = Profile.load("flutter_nestjs_ecommerce")
+    ws = Workspace.create("r", runs_dir=tmp_path)
+    st = mod.Staging(ws, profile, SandboxRunner(ws, profile.sandbox, SandboxMode.DOCKER), port=3999)
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        out = ""
+        if cmd[:2] == ["docker", "ps"] and "--format" in cmd:
+            out = "\n".join("\t".join(c) for c in containers)
+        elif cmd[:2] == ["docker", "ps"]:
+            out = "abc123\n"
+        elif cmd[:2] == ["docker", "stop"]:
+            port_busy[:] = [False]
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(mod.docker_access, "run", run)
+    monkeypatch.setattr(mod.docker_access, "problem", lambda: None)
+    monkeypatch.setattr(mod, "port_in_use", lambda port: port_busy[0])
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    return st, calls
+
+
+def test_staging_stops_an_earlier_pipeline_staging_that_holds_the_port(tmp_path, monkeypatch):
+    old = ("shopease-staging-api-1", "shopease-staging", "", "/x/runs/old/infra/c.yml,/x/runs/old/.sdlc/compose.override.yml")
+    st, calls = compose_staging(tmp_path, [True], [old], monkeypatch)
+    st._free_port()
+    assert ["docker", "stop", "abc123"] in calls
+
+
+def test_staging_refuses_a_port_held_by_something_else(tmp_path, monkeypatch):
+    other = ("postgres-admin", "", "", "")
+    st, calls = compose_staging(tmp_path, [True], [other], monkeypatch)
+    with pytest.raises(StagingError) as e:
+        st._free_port()
+    assert e.value.environment and "postgres-admin" in str(e.value) and "staging_port" in str(e.value)
+    assert not any(c[:2] == ["docker", "stop"] for c in calls)
+
+
+def test_compose_failures_from_the_machine_are_environment_errors(tmp_path, monkeypatch):
+    st, _ = compose_staging(tmp_path, [False], [], monkeypatch)
+    (st.ws.root / "infra").mkdir()
+    for f in (st.rel.compose_file, st.rel.env_file):
+        st.ws.write_text(f, "x")
+    monkeypatch.setattr(st, "_compose", lambda *a: subprocess.CompletedProcess(a, 1, "",
+                        "Bind for 0.0.0.0:3999 failed: port is already allocated"))
+    with pytest.raises(StagingError) as e:
+        st._start_compose()
+    assert e.value.environment
+    monkeypatch.setattr(st, "_compose", lambda *a: subprocess.CompletedProcess(a, 1, "", "npm ERR! build failed"))
+    with pytest.raises(StagingError) as e:
+        st._start_compose()
+    assert not e.value.environment
+
+
+def test_staging_containers_are_labelled_for_the_pipeline(tmp_path, monkeypatch):
+    st, _ = compose_staging(tmp_path, [False], [], monkeypatch)
+    from agentic_sdlc.release import staging as mod
+    monkeypatch.setattr(mod.docker_access, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+    st._compose("ps")
+    assert "agentic-sdlc.staging:" in (st.ws.root / ".sdlc/compose.override.yml").read_text()
 
 
 def test_staging_start_failure_is_handed_to_developer_once(tmp_path, prd, backlog):

@@ -16,7 +16,7 @@ customer_brief:
   expected_output: A structured product brief.
 
 spec_questions:
-  agent: spec_writer
+  agent: business_analyst
   description: |
     You are preparing to write the PRD for this product.
 
@@ -39,7 +39,7 @@ customer_answers:
     Your product brief:
     {product_brief}
 
-    The spec writer asks:
+    The business analyst asks:
     {questions}
 
     Answer every question directly, as the business owner. Keep answers
@@ -47,7 +47,7 @@ customer_answers:
   expected_output: One answer per question.
 
 write_prd:
-  agent: spec_writer
+  agent: business_analyst
   description: |
     Write the product requirements document.
 
@@ -102,7 +102,7 @@ plan_backlog:
     - Hierarchy: epics (E-01...) -> features (a short name per work item, e.g. "Cart API") -> work
       items (WI-001...). Milestones M1, M2... in delivery order, each ending in a testable slice.
     - Link every work item to what it builds: backend module names, the exact operationIds it
-      implements (backend) or calls (app), Prisma model names, screen ids (SCR-..).
+      implements (backend) or calls (app), Prisma model names (if there is a database), screen ids (SCR-..).
     - Coverage: every API operation must be implemented by the backend item(s) that own it; every
       data model and every screen must be covered by some item. Only use names that exist above.
     - Dependencies follow the design: an app item that calls an operation depends on the backend
@@ -142,9 +142,9 @@ design_architecture:
        endpoint the must-have stories need, with request/response schemas,
        bearer auth, pagination and a shared error schema. Every operation has
        an operationId (used to generate the mobile API client).
-    5. A complete Prisma schema (prisma_schema) for PostgreSQL.
+    5. {data_layer}
     6. Security design and at least three ADRs for the key decisions.
-  expected_output: The architecture document, OpenAPI YAML and Prisma schema.
+  expected_output: The architecture document, OpenAPI YAML and (when the stack has a database) Prisma schema.
 
 design_ui:
   agent: ui_ux_designer
@@ -281,20 +281,20 @@ deploy_staging:
 
     The build phase may already have created some of these as an infra work item: check what
     exists first, keep what works, and only fix or add what is missing or wrong. Make sure of:
-    1. {api_dir}/Dockerfile: a small multi-stage production image for the API. It must run database
-       migrations on start (before the server) and listen on the PORT environment variable.
+    1. {api_dir}/Dockerfile: a small multi-stage production image for the API. {start_rule}
        Use the same runtime major version as the build toolchain ({toolchain_image}), e.g. its
        -slim variant: the lockfile was produced with that toolchain.
-    2. {compose_file}: the API plus PostgreSQL 16 for staging. Publish the API on host port
+    2. {compose_file}: the API{compose_services} for staging. Publish the API on host port
        $STAGING_PORT (default {port}); build the API from {api_dir}; read settings from {env_file}.
     3. {env_file}: every environment variable the API needs, with SAFE TEST VALUES ONLY (no real
-       keys: use placeholders such as sk_test_placeholder). DATABASE_URL must point at the compose
-       database. Add a comment at the top saying these are test values.
+       keys: use placeholders such as sk_test_placeholder).{env_rule} Add a comment at the top
+       saying these are test values.
     4. .github/workflows/ci.yml: install, lint, build and test the API on every push and pull request.
     5. infra/README.md: how to run staging, and which variables production needs.
     Also make sure the API serves GET {health_path} (200 when up) and its OpenAPI document as JSON
     at {openapi_json_path} (for example with @nestjs/swagger); add them if missing, with tests.
     Never write real secrets anywhere.
+    {staging_notes}
   expected_output: A report of the files you created and anything a human must provide.
 
 write_smoke_tests:

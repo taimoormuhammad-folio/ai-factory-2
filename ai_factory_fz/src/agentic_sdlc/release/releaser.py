@@ -6,8 +6,9 @@ verify():
   2. Smoke tester writes the smoke suite for the journeys that are built. (once)
   3. Round: start staging -> contract check (served OpenAPI vs docs/openapi.yaml) ->
      Integration pass reviews wiring/config and reports bugs -> smoke suite runs against
-     staging -> stop staging. Problems go to the developer, then the next round.
-     Rounds are limited; if problems remain the run stops for a human.
+     staging -> stop staging. Problems go to the developer of their component, then the next
+     round. Rounds are limited; if problems remain, Gate 3 shows them and the human decides.
+     Machine problems (port taken, Docker unusable) stop the run: no developer can fix those.
 production(): package the release (build, notes, git tag) and, if a production command is
   configured, run it.
 """
@@ -117,7 +118,20 @@ class Releaser:
             "port": self.staging.port,
             "api_base_example": f"http://localhost:{self.staging.port}{self.profile.release.api_prefix}",
             "toolchain_image": self.profile.sandbox.runtimes[self.api.runtime].image if self.api.runtime else "(none)",
+            **self._data_store_rules(),
+            "staging_notes": rel.staging_notes.strip(),
         }
+
+    def _data_store_rules(self) -> dict[str, str]:
+        if self.profile.database:
+            return {
+                "start_rule": ("It must run database migrations on start (before the server) and listen on the PORT "
+                               "environment variable."),
+                "compose_services": " plus PostgreSQL 16",
+                "env_rule": " DATABASE_URL must point at the compose database.",
+            }
+        return {"start_rule": "It listens on the PORT environment variable (the API has no database).",
+                "compose_services": "", "env_rule": ""}
 
     # ---------- guardrails ----------
 
@@ -189,17 +203,33 @@ class Releaser:
         if reason:
             r.device_note = reason
             return []
-        try:
-            self.emulator.start(window=not (self.cfg.get("device") or {}).get("headless", True))
-        except DeviceError as e:
-            r.device_note = f"emulator did not start: {str(e)[:500]}"
-            return []
         fmt = {"api_base": self.device_api_base, "serial": self.emulator.serial}
-        build = self.emulator.run(dev.build_command.format(**fmt), app.workdir, timeout_s=dev.build_timeout_s)
+        # Build before booting: a Gradle build next to a booting emulator starves it (it hangs).
+        build = self.emulator.build(dev.build_command.format(**fmt), app.workdir, timeout_s=dev.build_timeout_s)
         if not build.ok:
             r.device_passed, r.device_output = False, build.output[-6000:]
             return [(dev.app_component, f"Building the app for the device failed:\n{build.output[-3000:]}")]
+        window = not (self.cfg.get("device") or {}).get("headless", True)
+        try:
+            self.emulator.start(window=window)
+        except DeviceError as e:
+            r.device_note = f"emulator did not start (a machine problem, not the app): {str(e)[:500]}"
+            return []
         installed = self.emulator.install(dev.apk_path, app.workdir, dev.app_id)
+        if not installed.ok and not self.emulator.responsive():
+            # The emulator hung or crashed (a machine problem): restart it once and try again.
+            log.warning("Emulator stopped responding; restarting it")
+            self.emulator.stop()
+            try:
+                self.emulator.start(window=window)
+                installed = self.emulator.install(dev.apk_path, app.workdir, dev.app_id)
+            except DeviceError as e:
+                installed = None
+                log.warning("Emulator restart failed: %s", e)
+        if installed is None or (not installed.ok and not self.emulator.responsive()):
+            r.device_note = ("the emulator stopped responding (a machine problem, not the app), "
+                             "also after a restart; see reports/device/emulator.log")
+            return []
         if not installed.ok:
             r.device_passed, r.device_output = False, installed.output[-3000:]
             return [(dev.app_component, f"Installing the app on the emulator failed:\n{installed.output[-2000:]}")]
@@ -252,7 +282,7 @@ class Releaser:
             # Device checks were enabled after this release was verified: verify it again.
             self.s.reopen_release("On-device checks enabled since the last verification")
             self.checkpoint("Release: reopened for on-device checks")
-        if self.r.verified:
+        if self.r.verified or self.r.failed:   # failed: waiting for the human at Gate 3
             return
         if self.r.deployment is None:
             result = self._guarded(self.profile.components.get("infra", self.api).agent, "deploy_staging", {},
@@ -288,13 +318,16 @@ class Releaser:
             self.ws.commit(f"Release verification round {self.r.rounds}: {outcome}")
             if problems is None:  # staging could not start; reason already recorded
                 return
+            self.r.open_problems = [[c, p] for c, p in problems]
             if not problems:
                 self.r.verified = True
                 self.checkpoint("Release: staging verified")
                 return
             if session_round == max_rounds:
-                self.stop(f"Release verification still failing after {max_rounds} round(s); "
-                          f"see reports/release_round{self.r.rounds}.md")
+                # Out of fix rounds: the human decides at Gate 3 (ship with known problems, or
+                # reject with feedback for another fix-and-verify cycle).
+                self.r.failed = True
+                self.checkpoint(f"Release: verification still failing after {max_rounds} round(s)")
                 return
             for component in dict.fromkeys(c for c, _ in problems):
                 texts = [t for c, t in problems if c == component]
@@ -305,13 +338,20 @@ class Releaser:
         api_c = self.profile.release.api_component
         if self.device_enabled:
             self.staging.extra_env = self.device_env()
+        else:
+            self.r.device_note = "device checks are disabled in the pipeline config"
         try:
             self.staging.start()
         except StagingError as e:
             logs = str(e)
             self.checkpoint("Release: staging failed to start")
+            if self.device_enabled:
+                self.r.device_note = "staging did not start, so the app was not run on the device"
+            if e.environment:  # the machine, not the code: no developer can fix it
+                self.stop(f"Staging could not start because of a machine problem (not the code): {logs[:900]}")
+                return None
             # A start failure may be a code/config problem the developer can fix; hand it over once.
-            if first_in_session and "SDLC_STAGING_DATABASE_URL" not in logs and "Docker is not usable" not in logs:
+            if first_in_session:
                 return [(api_c, f"Staging failed to start:\n{logs[-3000:]}")]
             self.stop(f"Staging could not start: {logs[:600]}")
             return None
@@ -362,6 +402,23 @@ class Releaser:
             return [i for i in issues if not i.startswith("Missing in the API")]
         return issues
 
+    def fix_after_rejection(self, feedback: str) -> None:
+        """Gate 3 rejected: send the reviewer's feedback, with the open verification problems of each
+        component, to that component's developer (the API's developer if nothing is open)."""
+        open_by_component: dict[str, list[str]] = {}
+        for c, p in self.r.open_problems:
+            open_by_component.setdefault(c, []).append(p)
+        if not open_by_component:
+            open_by_component[self.profile.release.api_component] = []
+        for component, texts in open_by_component.items():
+            if not self.can_continue():
+                return
+            message = "The release reviewer rejected this release:\n" + (feedback or "(no feedback given)")
+            if texts:
+                message += "\n\nStaging verification also found these problems in your part:\n" + "\n".join(texts)
+            self.fix(message, component)
+        self.r.open_problems = []
+
     def fix(self, problems: str, component: str | None = None) -> None:
         """Send problems to the developer of the component they belong to (default: the API)."""
         component = component or self.profile.release.api_component
@@ -389,7 +446,7 @@ class Releaser:
                   "", "## Smoke tests", f"Result: {'passed' if r.smoke_passed else 'failed' if r.smoke_passed is False else 'not run'}",
                   "", "```", r.smoke_output[-3000:], "```", "", "## On-device (Android emulator)"]
         if r.device_passed is None:
-            lines.append(f"Not run: {r.device_note or 'device checks disabled'}")
+            lines.append(f"Not run: {r.device_note or 'no reason recorded'}")
         else:
             lines.append(f"Result: {'passed' if r.device_passed else 'failed'}" + (f" ({r.device_note})" if r.device_note else ""))
             lines += [f"![{p.rsplit('/', 1)[-1]}](../{p.removeprefix('reports/')})" for p in r.device_screenshots]
@@ -397,13 +454,18 @@ class Releaser:
                 lines += ["", "```", r.device_output[-3000:], "```"]
         lines += ["", "## Problems"]
         if problems is None:
-            lines.append(f"- Staging could not start: {self.s.stop_reason[:1500]}")
+            lines.append(f"- {self.s.stop_reason[:1500] or 'Staging could not start'}")
         else:
             lines += [f"- [{c}] {p}" for c, p in problems] or ["- none"]
         return "\n".join(lines)
 
     def gate_summary(self) -> str:
         r = self.r
+        if r.failed and not r.verified:
+            problems = "\n".join(f"  - [{c}] {p.splitlines()[0][:200]}" for c, p in r.open_problems) or "  (none recorded)"
+            return (f"Release verification FAILED: problems remain after round {r.rounds} (fix rounds used up).\n"
+                    f"{problems}\nApproving ships the release WITH these problems. Rejecting sends your feedback and "
+                    f"these problems to the developers, then verifies staging again.")
         return (f"Staging verified in round {r.rounds}: contract ok, integration "
                 f"{'passed' if r.integration and r.integration.passed else 'n/a'}, smoke "
                 f"{'passed' if r.smoke_passed else 'n/a'}, on device "
@@ -453,6 +515,8 @@ class Releaser:
             "## Included", self.built_summary(), "",
             "## Not included", self.not_built_summary(), "",
             "## Verification", f"Staging rounds: {r.rounds}. Smoke: {'passed' if r.smoke_passed else 'n/a'}.",
+            *(["**Verification failed; approved at Gate 3 with these known problems:**",
+               *[f"- [{c}] {p.splitlines()[0][:200]}" for c, p in r.open_problems], ""] if r.failed and not r.verified else []),
             f"Integration: {r.integration.summary if r.integration else 'n/a'}", "",
             "## Deployment", r.deployment.summary if r.deployment else "", "",
         ])

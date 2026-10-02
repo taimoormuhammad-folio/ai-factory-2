@@ -144,6 +144,7 @@ class Emulator:
         self.runtime = runtime
         self.boot_timeout_s = boot_timeout_s
         self._proc: subprocess.Popen | None = None
+        self.wait_s = 120   # longest wait for the device to show up in adb
 
     @property
     def serial(self) -> str:
@@ -151,10 +152,20 @@ class Emulator:
 
     def run(self, command: str, workdir: str, timeout_s: int | None = None) -> SandboxResult:
         """Run a device command (e.g. flutter test -d <serial>) in the container, after the
-        container's fresh adb server has found the emulator."""
-        script = f"adb start-server >/dev/null 2>&1; adb -s {self.serial} wait-for-device; {command}"
+        container's fresh adb server has found the emulator. A device that never shows up (hung or
+        crashed emulator) fails the command after `wait_s` instead of blocking it."""
+        script = (f"adb start-server >/dev/null 2>&1; timeout {self.wait_s} adb -s {self.serial} wait-for-device "
+                  f"|| {{ echo 'The emulator {self.serial} is not reachable (hung or not running)'; exit 1; }}; {command}")
         return self.sandbox.run_trusted(self.runtime, workdir, f"sh -c {shlex.quote(script)}", host_network=True,
                                         timeout_s=timeout_s)
+
+    def build(self, command: str, workdir: str, timeout_s: int | None = None) -> SandboxResult:
+        """Build the app (no device needed): run before the emulator boots so they don't compete."""
+        return self.sandbox.run_trusted(self.runtime, workdir, command, host_network=True, timeout_s=timeout_s)
+
+    def responsive(self) -> bool:
+        """The emulator process is running and the device answers."""
+        return bool(self._host_pids()) and self.is_booted()
 
     def adb(self, *args: str, workdir: str = ".") -> SandboxResult:
         """adb against the (booted) device, after the container's adb server has found it."""
@@ -214,14 +225,28 @@ class Emulator:
     def stop(self) -> None:
         """Power the device off (no console auth token needed), then make sure the emulator
         process on this machine is gone."""
-        self.run(f"adb -s {self.serial} shell reboot -p", ".")
+        if not self._host_pids():
+            self._proc = None
+            return
+        # Short, bounded attempt: a hung emulator never answers, so don't wait for it.
+        script = f"adb start-server >/dev/null 2>&1; timeout 20 adb -s {self.serial} shell reboot -p"
+        self.sandbox.run_trusted(self.runtime, ".", f"sh -c {shlex.quote(script)}", host_network=True, timeout_s=90)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and self._host_pids():
             time.sleep(2)
-        for pid in self._host_pids():
+        for sig in (15, 9):
+            for pid in self._host_pids():
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and self._host_pids():
+                time.sleep(1)
+        if self._proc is not None:
             try:
-                os.kill(pid, 15)
-            except ProcessLookupError:
+                self._proc.wait(timeout=5)   # reap it so it doesn't linger as a zombie
+            except subprocess.TimeoutExpired:
                 pass
         self._proc = None
 

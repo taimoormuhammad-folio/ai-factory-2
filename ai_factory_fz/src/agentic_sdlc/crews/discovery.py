@@ -1,4 +1,4 @@
-"""Discovery phase: Customer expands the brief, Spec writer clarifies and writes the PRD."""
+"""Discovery phase: Customer expands the brief, Business analyst clarifies and writes the PRD."""
 
 from agentic_sdlc.artifacts.prd import PRD, CustomerAnswers, ProductBrief, QAPair, SpecQuestions
 from agentic_sdlc.crews.base import TaskResult, TaskRunner, artifact_guardrail
@@ -33,7 +33,7 @@ def clarify(
     runner: TaskRunner, product_brief: ProductBrief, history: list[QAPair], max_rounds: int,
     guard_rules: set[str] | frozenset = frozenset(),
 ) -> tuple[list[QAPair], list[TaskResult]]:
-    """Spec writer asks, Customer answers, until the spec writer is ready or rounds run out."""
+    """Business analyst asks, Customer answers, until the business analyst is ready or rounds run out."""
     history = list(history)
     results: list[TaskResult] = []
     brief_md = product_brief.to_markdown()

@@ -246,12 +246,16 @@ class SDLCFlow(Flow[ProjectState]):
                 self.deps.runner, self.state.prd, self.deps.profile.stack_summary(),
                 self.deps.profile.domain_entities, notes, self._scope,
                 guardrails=architecture_guardrails.checker(self.deps.profile, self.deps.pipeline),
+                database=self.deps.profile.database,
             ))
             self.state.architecture = arch
             ws.save_artifact("architecture", arch)
             ws.write_text("docs/openapi.yaml", arch.openapi_yaml)
-            ws.write_text("docs/schema.prisma", arch.prisma_schema)
-            self._checkpoint("Planning: architecture, OpenAPI contract, Prisma schema")
+            if self.deps.profile.database:
+                ws.write_text("docs/schema.prisma", arch.prisma_schema)
+                self._checkpoint("Planning: architecture, OpenAPI contract, Prisma schema")
+            else:
+                self._checkpoint("Planning: architecture, OpenAPI contract")
         if (self._phase_enabled("design") and self.state.design is None and self.state.architecture is not None
                 and self._can_continue()):
             self.state.design = self._record(design.design_ui(
@@ -296,6 +300,8 @@ class SDLCFlow(Flow[ProjectState]):
             summary += (f" Estimates reviewed by the developers: {changed} changed from the PM's draft, "
                         f"{disputed} big disagreements reconciled (see docs/backlog.md).")
         docs = ["docs/architecture.md", "docs/openapi.yaml", "docs/schema.prisma", "docs/design_system.md", "docs/backlog.md"]
+        if not self.deps.profile.database:
+            docs.remove("docs/schema.prisma")
 
         def discard() -> None:
             # A change to the design changes the plan: rewrite all three with the feedback.
@@ -377,9 +383,10 @@ class SDLCFlow(Flow[ProjectState]):
     def release_phase(self) -> Literal["release_ready", "stopped"]:
         if self._can_continue():
             self._releaser().verify()
-        if self.state.status != "running" or not self.state.release.verified:
+        r = self.state.release
+        if self.state.status != "running" or not (r.verified or r.failed):
             return "stopped"
-        return "release_ready"
+        return "release_ready"   # verified, or failed after all fix rounds: the human decides
 
     @router("release_ready")
     def release_gate(self) -> Literal["release_approved", "release_rejected", "stopped"]:
@@ -390,9 +397,10 @@ class SDLCFlow(Flow[ProjectState]):
 
     @listen("release_rejected")
     def revise_release(self) -> None:
-        # The reviewer's feedback goes to the developer; then staging is verified again.
+        # The reviewer's feedback (with any open problems) goes to each affected component's
+        # developer; then staging is verified again.
         if self._can_continue():
-            self._releaser().fix("The release reviewer rejected this release:\n" + self.state.revision_notes("release"))
+            self._releaser().fix_after_rejection(self.state.revision_notes("release"))
 
     @router("release_approved")
     def production_phase(self) -> Literal["run_finished", "stopped"]:

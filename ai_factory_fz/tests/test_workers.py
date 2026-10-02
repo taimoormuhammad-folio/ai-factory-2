@@ -147,3 +147,24 @@ def test_usage_limit_stops_without_trying_the_fallback_model(tmp_path):
     with pytest.raises(UsageLimitError, match="resets 8:10pm"):
         ClaudeCodeWorker(agents, load_config("tasks"), ws, sandbox, cli_path=cli).run(job())
     assert "claude-haiku-4-5-20251001" in json.loads(log.read_text())["argv"]  # primary model (Haiku-only config)
+
+
+def test_wrappers_run_from_the_root_in_the_toolchains_folder(tmp_path, monkeypatch):
+    from agentic_sdlc.tools import sandbox_cli
+    from agentic_sdlc.tools.sandbox_exec import SandboxResult
+
+    profile, ws, sandbox, agents = setup(tmp_path, SandboxMode.DOCKER)
+    monkeypatch.setattr(sandbox, "unavailable_reason", lambda rt: None)
+    worker = ClaudeCodeWorker(agents, load_config("tasks"), ws, sandbox)
+    worker._install_wrappers(["node", "flutter"])
+    assert "--default-workdir app" in (ws.root / ".sdlc/bin/flutter").read_text()
+    assert "--default-workdir server" in (ws.root / ".sdlc/bin/npm").read_text()
+
+    seen = {}
+    monkeypatch.setattr("agentic_sdlc.tools.sandbox_exec.SandboxRunner._execute",
+                        lambda self, rt, wd, argv, extra_env=None, host_network=False, timeout_s=None:
+                        seen.update(wd=wd) or SandboxResult(exit_code=0, output=""))
+    monkeypatch.chdir(ws.root)   # QA calls it from the workspace root
+    sandbox_cli.main(["--workspace", str(ws.root), "--profile", "flutter_nestjs_ecommerce", "--runtime", "flutter",
+                      "--default-workdir", "app", "--", "flutter", "test"])
+    assert seen["wd"] == "app"

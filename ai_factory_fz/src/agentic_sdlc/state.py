@@ -83,12 +83,14 @@ class ReleaseState(BaseModel):
     device_note: str = ""                         # why device checks were skipped, if they were
     device_screenshots: list[str] = Field(default_factory=list)
     verified: bool = False                        # staging, integration, smoke (and device) passed
+    failed: bool = False                          # fix rounds used up with problems left: Gate 3 decides
+    open_problems: list[list[str]] = Field(default_factory=list)  # [component, problem] from the last round
     production: Literal["todo", "packaged", "deployed", "failed"] = "todo"
     production_notes: str = ""
 
     def reset_verification(self) -> None:
         self.contract_issues, self.integration = [], None
-        self.smoke_passed, self.smoke_output, self.verified = None, "", False
+        self.smoke_passed, self.smoke_output, self.verified, self.failed = None, "", False, False
         self.device_passed, self.device_output, self.device_note, self.device_screenshots = None, "", "", []
 
 
