@@ -2,7 +2,6 @@
 __pycache__/
 lib/
 .DS_Store
-runs/
 .venv/
 *.html
 
