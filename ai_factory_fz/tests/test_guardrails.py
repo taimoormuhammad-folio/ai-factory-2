@@ -1,4 +1,4 @@
-"""Architect guardrails: a compliant design passes all 14; each rule catches its own violation."""
+"""Architect guardrails: a compliant design passes all 15; each rule catches its own violation."""
 
 import pytest
 
@@ -113,6 +113,15 @@ def test_a2_mobile_platform(profile):
     a2 = good()
     a2.app_features = []
     assert any("no app features" in h for h in rule_hits(a2, profile, "A2"))
+
+
+def test_a3_repository_layout(profile):
+    a = good()
+    a.overview += " Layout: apps/api (NestJS), apps/mobile (Flutter), contracts/openapi.yaml, app/packages/api_client."
+    hits = rule_hits(a, profile, "A3")
+    assert len(hits) == 2 and "in apps/" in hits[0] and "in contracts/" in hits[1]
+    a.overview = good().overview + " server/src/main.ts, app/lib, infra/docker-compose.staging.yml, GET /api/v1/items"
+    assert rule_hits(a, profile, "A3") == []
 
 
 def test_b1_prose_must_match_contract(profile):

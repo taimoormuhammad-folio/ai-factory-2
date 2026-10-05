@@ -246,7 +246,7 @@ class SDLCFlow(Flow[ProjectState]):
                 self.deps.runner, self.state.prd, self.deps.profile.stack_summary(),
                 self.deps.profile.domain_entities, notes, self._scope,
                 guardrails=architecture_guardrails.checker(self.deps.profile, self.deps.pipeline),
-                database=self.deps.profile.database,
+                database=self.deps.profile.database, layout=self.deps.profile.layout_summary(),
             ))
             self.state.architecture = arch
             ws.save_artifact("architecture", arch)
@@ -267,7 +267,7 @@ class SDLCFlow(Flow[ProjectState]):
                 and self._can_continue()):
             self.state.backlog = self._record(planning.plan_work(
                 self.deps.runner, self.state.prd, self.state.architecture, self.state.design,
-                self.deps.profile.stack_summary(), notes, self._scope,
+                self.deps.profile.stack_summary(), notes, self._scope, layout=self.deps.profile.layout_summary(),
             ))
             ws.save_artifact("backlog", self.state.backlog)
             self._checkpoint("Planning: work breakdown and estimates")

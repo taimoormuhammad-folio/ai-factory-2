@@ -92,6 +92,9 @@ plan_backlog:
 
     Target stack: {stack}
 
+    Repository layout (fixed by the build tooling; work items use exactly these folders):
+    {layout}
+
     Scope for this run:
     {scope_rules}
 
@@ -127,6 +130,10 @@ design_architecture:
 
     Target stack: {stack}
     Core domain entities to consider: {domain_entities}
+
+    Repository layout (fixed by the build tooling, which creates these folders and runs the coding
+    agents in them; use exactly these paths and add no other top-level folders such as apps/ or packages/):
+    {layout}
 
     Reviewer feedback on the previous draft (address all of it, empty if first draft):
     {revision_notes}

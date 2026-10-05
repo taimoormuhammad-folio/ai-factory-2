@@ -19,6 +19,7 @@ PHASE = "planning"
 DATA_LAYER = "A complete Prisma schema (prisma_schema) for PostgreSQL."
 NO_DATA_LAYER = ("No database: the API keeps no data of its own, so leave prisma_schema empty. Module "
                  "entities name the records of the external system the API calls.")
+NO_LAYOUT = "(not fixed by the profile)"
 
 
 def design_architecture(
@@ -30,9 +31,11 @@ def design_architecture(
     scope: Scope | None = None,
     guardrails: Callable[[ArchitectureDoc], list[str]] | None = None,
     database: bool = True,
+    layout: str = "",
 ) -> TaskResult[ArchitectureDoc]:
     """`guardrails`: extra checks on the design (see guardrails/architecture.py).
-    `database`: False for stacks whose API keeps no data (no Prisma schema)."""
+    `database`: False for stacks whose API keeps no data (no Prisma schema).
+    `layout`: the repository folders the build tooling creates (Profile.layout_summary)."""
     scope = scope or Scope()
     extra = guardrails or (lambda a: [])
     data_errors = ArchitectureDoc.prisma_errors if database else ArchitectureDoc.no_database_errors
@@ -46,6 +49,7 @@ def design_architecture(
             "revision_notes": revision_notes or "(none)",
             "scope_rules": scope.rules_text(),
             "data_layer": DATA_LAYER if database else NO_DATA_LAYER,
+            "layout": layout or NO_LAYOUT,
         },
         ArchitectureDoc,
         guardrail=artifact_guardrail(
@@ -69,6 +73,7 @@ def plan_work(
     stack: str,
     revision_notes: str = "",
     scope: Scope | None = None,
+    layout: str = "",
 ) -> TaskResult[Backlog]:
     scope = scope or Scope()
     must_haves = prd.must_have_ids()
@@ -88,6 +93,7 @@ def plan_work(
             "solution": architecture.solution_summary(),
             "screens": screens_summary(design),
             "stack": stack,
+            "layout": layout or NO_LAYOUT,
             "revision_notes": revision_notes or "(none)",
             "scope_rules": scope.rules_text(),
         },

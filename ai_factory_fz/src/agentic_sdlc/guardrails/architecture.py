@@ -7,7 +7,7 @@ A failing design goes back to the Architect with the list of problems (the task'
 
   A1 stack conformance         B1 prose matches contract    C1 entities exist        D1 3+ complete ADRs
   A2 mobile platform           B2 health endpoint           C2 money as integers     D2 security basics
-                               B3 API prefix                C3 id + timestamps       D3 no secrets
+  A3 repository layout         B3 API prefix                C3 id + timestamps       D3 no secrets
                                B4 shared error schema
                                B5 typed responses
                                B6 auth per operation
@@ -24,7 +24,7 @@ from agentic_sdlc.registry.profiles import Profile
 from agentic_sdlc.release.contract import operations as contract_operations
 from agentic_sdlc.release.contract import strip_prefix
 
-ALL_RULES = ["A1", "A2", "B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2", "C3", "D1", "D2", "D3"]
+ALL_RULES = ["A1", "A2", "A3", "B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2", "C3", "D1", "D2", "D3"]
 _METHODS = {"get", "post", "put", "patch", "delete"}
 _PARAM = re.compile(r"\{[^}]+\}|:[A-Za-z_]\w*")
 
@@ -107,6 +107,19 @@ def a1_stack(c: Context) -> list[str]:
     errors += [f"A1: the design does not use {t}, which is part of this profile's stack" for t in required
                if not _has_term(techs, t)]
     return errors
+
+
+# Top-level folders designs tend to invent (monorepo habits); flagged unless the profile uses them.
+_LAYOUT_ROOTS = ["apps", "packages", "contracts", "services", "libs", "backend", "frontend", "mobile",
+                 "api", "web", "client", "server", "app"]
+
+
+def a3_layout(c: Context) -> list[str]:
+    """The build tooling creates the profile's folders and runs the agents there; others would split the code."""
+    allowed = c.profile.layout_roots()
+    found = {m.group(1) for m in re.finditer(rf"(?<![\w/.:@~-])({'|'.join(_LAYOUT_ROOTS)})/[\w.-]", c.text())}
+    return [f"A3: the design puts code in {root}/, which is not in this profile's repository layout "
+            f"(use {', '.join(sorted(r + '/' for r in allowed))})" for root in sorted(found - allowed)]
 
 
 def a2_platform(c: Context) -> list[str]:
@@ -274,7 +287,7 @@ def d3_no_secrets(c: Context) -> list[str]:
 
 
 RULES: dict[str, Callable[[Context], list[str]]] = {
-    "A1": a1_stack, "A2": a2_platform,
+    "A1": a1_stack, "A2": a2_platform, "A3": a3_layout,
     "B1": b1_prose_matches_contract, "B2": b2_health, "B3": b3_prefix, "B4": b4_error_schema,
     "B5": b5_typed_responses, "B6": b6_auth_per_operation,
     "C1": c1_entities_exist, "C2": c2_money_integers, "C3": c3_ids_and_timestamps,

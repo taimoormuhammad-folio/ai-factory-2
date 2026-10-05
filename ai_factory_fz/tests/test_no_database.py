@@ -76,6 +76,14 @@ def test_data_model_rules_only_run_with_a_database():
     assert g.checker(Profile.load(NETSUITE), pipeline)(a) == []
 
 
+def test_layout_names_the_profile_folders_and_the_provided_mock():
+    layout = Profile.load(NETSUITE).layout_summary()
+    for path in ("server/", "app/", "docs/openapi.yaml", "app/packages/api_client/", "infra/suitecommerce-mock/"):
+        assert path in layout
+    assert "do not rewrite it" in layout
+    assert Profile.load(NETSUITE).layout_roots() == {"server", "app", "docs", "infra", ".github"}
+
+
 def test_architect_is_told_there_is_no_database():
     seen = {}
 
@@ -83,8 +91,9 @@ def test_architect_is_told_there_is_no_database():
         def run(self, phase, key, inputs, model, guardrail=None):
             seen.update(inputs)
 
-    planning.design_architecture(Runner(), SimpleNamespace(to_markdown=lambda: "prd"), "stack", [], "", database=False)
-    assert seen["data_layer"] == planning.NO_DATA_LAYER
+    planning.design_architecture(Runner(), SimpleNamespace(to_markdown=lambda: "prd"), "stack", [], "", database=False,
+                                 layout="- server/: the backend")
+    assert seen["data_layer"] == planning.NO_DATA_LAYER and seen["layout"] == "- server/: the backend"
     planning.design_architecture(Runner(), SimpleNamespace(to_markdown=lambda: "prd"), "stack", [], "")
     assert seen["data_layer"] == planning.DATA_LAYER
 
