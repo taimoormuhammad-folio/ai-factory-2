@@ -92,7 +92,8 @@ def _artifact_from_cli_json(data: dict[str, Any], model: type[T]) -> T:
     # Cursor CLI often finishes with subtype=success and a narrative result (no JSON envelope).
     if model is WorkItemResult and not data.get("is_error"):
         raw = data.get("result") or data.get("text") or data.get("output") or ""
-        if isinstance(raw, str) and raw.strip():
+        # A usage-limit notice is not a work result: let the caller stop the run instead.
+        if isinstance(raw, str) and raw.strip() and not is_usage_limit(raw):
             return WorkItemResult(
                 summary=raw.strip()[:4000],
                 checks_passed=False,

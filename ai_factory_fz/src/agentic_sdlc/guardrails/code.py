@@ -132,7 +132,7 @@ def dv3_scope(ws: Workspace, comp: Component, profile: Profile, files: list[str]
             and not any(f.startswith(p) for p in SCOPE_INFRA_PREFIXES)
         ]
         eff = component_workdir(ws, comp)
-        label = eff if eff == comp.workdir else f"{comp.workdir}/ or {eff}/"
+        label = f"{eff}/" if eff == comp.workdir else f"{comp.workdir}/ or {eff}/"
         errors += [f"DV3: {f} is outside this work item's component ({label}); undo that change" for f in outside]
     for source, copies in (profile.guardrails.get("contract_copies") or {}).items():
         src = ws.root / source

@@ -34,9 +34,10 @@ def fake_cli(tmp_path, reply):
         wrapper = tmp_path / "claude.cmd"
         wrapper.write_text(f'@"{sys.executable}" "{script}" %*\n', encoding="utf-8")
         return str(wrapper), log
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    script.with_name("claude").write_text(f"#!{sys.executable}\n" + script.read_text())
-    return str(script.with_name("claude")), log
+    cli = script.with_name("claude")
+    cli.write_text(f"#!{sys.executable}\n" + script.read_text())
+    cli.chmod(cli.stat().st_mode | stat.S_IEXEC)
+    return str(cli), log
 
 
 def setup(tmp_path, mode, backend=Backend.CLAUDE_CODE):
