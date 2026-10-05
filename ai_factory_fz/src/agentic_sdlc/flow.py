@@ -6,6 +6,7 @@ Rejecting a gate clears that artifact, so the next pass rewrites it using the fe
 """
 
 import logging
+import shutil
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
@@ -17,6 +18,7 @@ from agentic_sdlc.build.loop import BuildConfig, Builder
 from agentic_sdlc.build.sync import sync_build_with_backlog
 from agentic_sdlc import preflight
 from agentic_sdlc.crews import design, discovery, estimation, planning
+from agentic_sdlc.design import mockups as mockup_kit
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import architecture as architecture_guardrails
 from agentic_sdlc.crews.base import TaskResult, TaskRunner
@@ -266,6 +268,7 @@ class SDLCFlow(Flow[ProjectState]):
                 agent_guardrails.enabled(self.deps.pipeline)))
             ws.save_artifact("design_system", self.state.design)
             self._checkpoint("Design: design system and screen specs")
+        self._write_mockups(notes)
         if (self._phase_enabled("planning") and self.state.backlog is None and self.state.architecture is not None
                 and self._can_continue()):
             self.state.backlog = self._record(planning.plan_work(
@@ -283,6 +286,31 @@ class SDLCFlow(Flow[ProjectState]):
                 self._record(result)
             ws.save_artifact("backlog", self.state.backlog)
             self._checkpoint("Planning: developers' estimation review")
+
+    def _write_mockups(self, notes: str) -> None:
+        """One designer call per screen (resumable), then the HTML pages, PNGs and gallery."""
+        cfg = self.deps.pipeline.get("design") or {}
+        spec = self.state.design
+        if not cfg.get("mockups") or spec is None or not self._phase_enabled("design"):
+            return
+        wanted = cfg.get("mockup_states", mockup_kit.DEFAULT_STATES)
+        viewport = tuple(cfg.get("viewport", mockup_kit.DEFAULT_VIEWPORT))
+        limit = cfg.get("max_states_per_screen", 4)
+        done = {m.screen_id for m in self.state.mockups}
+        for screen in spec.screens:
+            if screen.id in done or not self._can_continue():
+                continue
+            states = mockup_kit.states_to_draw(screen, wanted, limit)
+            self.state.mockups.append(self._record(design.design_mockups(self.deps.runner, spec, screen, states, notes,
+                                                                         prd=self.state.prd)))
+            self._checkpoint(f"Design: mockups {screen.id}")
+        if {m.screen_id for m in self.state.mockups} >= {s.id for s in spec.screens}:
+            ws = self.deps.workspace
+            shutil.rmtree(ws.root / "docs/mockups", ignore_errors=True)   # drop pages of a rejected design
+            counts = mockup_kit.write_mockups(ws, spec, self.state.mockups, viewport)
+            if counts["pages"] and not counts["pngs"]:
+                log.warning("Mockup PNGs were not rendered (no Chrome/Chromium found); the HTML pages are in docs/mockups")
+            self._checkpoint(f"Design: {counts['pages']} mockup pages, {counts['pngs']} PNGs")
 
     @router(or_(solution_phase, "revise_solution"))
     def architecture_gate(self) -> Literal["architecture_approved", "architecture_rejected", "stopped"]:
@@ -305,10 +333,13 @@ class SDLCFlow(Flow[ProjectState]):
         docs = ["docs/architecture.md", "docs/openapi.yaml", "docs/schema.prisma", "docs/design_system.md", "docs/backlog.md"]
         if not self.deps.profile.database:
             docs.remove("docs/schema.prisma")
+        if self.state.mockups:
+            docs.insert(docs.index("docs/design_system.md") + 1, "docs/mockups/index.html")
 
         def discard() -> None:
             # A change to the design changes the plan: rewrite all three with the feedback.
             self.state.architecture = self.state.design = self.state.backlog = None
+            self.state.mockups = []
 
         return self._gate("architecture", summary, docs, discard)
 

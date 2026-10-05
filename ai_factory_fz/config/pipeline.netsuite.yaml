@@ -15,6 +15,14 @@ scope:
     sign in, item list with search, item detail, cart, checkout (addresses, shipping method, PO number,
     review) and order confirmation.
 
+design:
+  # UI/UX designer draws a mockup of each screen state (docs/mockups/: HTML pages, PNGs, index.html
+  # gallery shown at the architecture gate). PNGs need Chrome or Chromium; without it only HTML is written.
+  mockups: true
+  mockup_states: [success, loading, error, empty]   # kinds of states to draw, matched to each screen's spec
+  max_states_per_screen: 4
+  viewport: [390, 844]
+
 planning:
   # Developers re-estimate the items they will build; the PM reconciles big gaps.
   estimation_review: true

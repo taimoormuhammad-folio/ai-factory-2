@@ -178,6 +178,45 @@ design_ui:
     - Minimum touch target 48dp; text contrast at least WCAG AA.
   expected_output: A design system with screen specs and navigation.
 
+design_mockups:
+  agent: ui_ux_designer
+  description: |
+    Draw mockups of screen {screen_id} of the mobile app, one per state listed below. They are shown to
+    the reviewer at the architecture gate and given to the frontend developer, so make them look like the
+    real screen: realistic sample content (item names, SKUs, prices, quantities, addresses), the real
+    labels and buttons, and the layout a phone user would see.
+
+    Product:
+    {product}
+
+    Screen:
+    {screen}
+
+    User stories this screen serves, with their acceptance criteria (the mockups must follow them, e.g.
+    what may and may not be shown; sample content must fit this product and its customers):
+    {stories}
+
+    States to draw (use exactly these names in "state"):
+    {states}
+
+    Mockup kit (the page around your markup, a phone screen, is provided):
+    {kit}
+
+    Accessibility rules from the design system: {accessibility}
+
+    Reviewer feedback on the previous design (address all of it, empty if first draft):
+    {revision_notes}
+
+    Rules:
+    - For each state, return body markup only: no html, head, body, style, script, link, iframe or img tags.
+    - Style only with the kit classes, the typography classes and inline styles that use var(--token)
+      colors, var(--sp-N) spacing and var(--r-N) radii. No hex, rgb() or hsl() colors and no URLs.
+    - Images are .img boxes; icons are .icon placeholders with a short name.
+    - Loading states use .skeleton bars shaped like the content; error states show the message and the
+      Retry action; empty states explain what to do next.
+    - Keep each state under about 60 lines of markup.
+  expected_output: The screen id and one mockup (state name and body markup) per state listed.
+
 # ---------- build phase (M3). {tooling} is filled in by the worker (Claude Code or CrewAI tools). ----------
 
 implement_work_item:

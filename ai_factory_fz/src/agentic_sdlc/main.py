@@ -68,6 +68,38 @@ def resume() -> None:
     resume_run(args.run_id)
 
 
+def mockups() -> None:
+    """Draw the UI/UX designer's screen mockups for an existing run (docs/mockups/), without re-running it."""
+    from agentic_sdlc.flow import default_deps
+    from agentic_sdlc.state import ProjectState
+
+    parser = argparse.ArgumentParser(description="Draw screen mockups (HTML + PNG) for an existing run")
+    parser.add_argument("run_id")
+    parser.add_argument("--redraw", action="store_true", help="Draw every screen again, not only missing ones")
+    args = parser.parse_args()
+    ws = Workspace.open(args.run_id)
+    flow = SDLCFlow(restore_json=ws.load_state_json())
+    restored = ProjectState.model_validate_json(ws.load_state_json())
+    for name in ProjectState.model_fields:
+        if name != "id":
+            setattr(flow.state, name, getattr(restored, name))
+    if flow.state.design is None:
+        raise SystemExit("This run has no design system yet (docs/design_system.json): nothing to draw.")
+    flow._deps = default_deps(flow.state)
+    flow._deps.pipeline["design"] = {**(flow._deps.pipeline.get("design") or {}), "mockups": True}
+    flow._deps.pipeline.setdefault("phases", {})["design"] = True
+    if args.redraw:
+        flow.state.mockups = []
+    status, reason = flow.state.status, flow.state.stop_reason
+    flow.state.status = "running"          # drawing needs a running state; the run's own status is restored below
+    try:
+        flow._write_mockups("")
+    finally:
+        flow.state.status, flow.state.stop_reason = status, reason
+        ws.save_state(flow.state)
+    print(f"Mockups: {ws.root / 'docs/mockups/index.html'}")
+
+
 def _apply_milestones(milestones: str | None) -> None:
     if milestones:
         os.environ["SDLC_BUILD_MILESTONES"] = milestones

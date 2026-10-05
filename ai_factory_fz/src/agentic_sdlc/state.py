@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from agentic_sdlc.artifacts.architecture import ArchitectureDoc
 from agentic_sdlc.artifacts.backlog import Backlog
-from agentic_sdlc.artifacts.design import DesignSystem
+from agentic_sdlc.artifacts.design import DesignSystem, ScreenMockups
 from agentic_sdlc.artifacts.prd import PRD, ProductBrief, QAPair
 from agentic_sdlc.artifacts.reports import QAReport, WorkItemResult
 
@@ -106,6 +106,7 @@ class ProjectState(FlowState):
     backlog: Backlog | None = None
     architecture: ArchitectureDoc | None = None
     design: DesignSystem | None = None
+    mockups: list[ScreenMockups] = Field(default_factory=list)   # per screen, when design.mockups is on
     build: BuildState = Field(default_factory=BuildState)
     release: ReleaseState = Field(default_factory=ReleaseState)
 
