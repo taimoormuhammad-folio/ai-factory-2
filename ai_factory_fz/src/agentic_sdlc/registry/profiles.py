@@ -34,12 +34,20 @@ class ScaffoldStep(BaseModel):
     creates: str | None = None           # skip the step if this path already exists
 
 
+class AcceptanceTests(BaseModel):
+    """Where the Test Writer puts a component's locked acceptance tests and how they run (in the workdir)."""
+    dir: str                             # e.g. server/test/acceptance (relative to the run folder)
+    command: str                         # e.g. npm run test:acceptance
+    note: str = ""                       # extra instruction for the Test Writer (e.g. add the npm script)
+
+
 class Component(BaseModel):
     agent: str
     workdir: str
     runtime: str | None = None           # None: no toolchain needed (e.g. config files)
     checks: list[str] = Field(default_factory=list)   # must pass before an item counts as done
     scaffold: list[ScaffoldStep] = Field(default_factory=list)
+    acceptance: AcceptanceTests | None = None
 
 
 class ReleaseConfig(BaseModel):

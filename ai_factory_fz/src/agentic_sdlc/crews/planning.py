@@ -64,15 +64,18 @@ def screens_summary(design: DesignSystem | None) -> str:
     return "\n".join(f"- {s.id} {s.name} ({s.route}): stories {', '.join(s.story_ids)}" for s in design.screens)
 
 
-def wbs_errors(wbs: Wbs, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str]) -> list[str]:
+def wbs_errors(wbs: Wbs, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str],
+               allowed: dict[str, list[str]] | None = None) -> list[str]:
     known_acs = {c.id for _, c in prd.criteria()}
-    return (wbs.structure_errors() + wbs.w1_ownership(workdirs) + wbs.w2_verify()
+    return (wbs.structure_errors() + wbs.w1_ownership(workdirs) + wbs.w2_verify(allowed)
             + wbs.w3_coverage(prd.must_have_ac_ids(), known_acs, architecture.operations(), architecture.data_models()))
 
 
 def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str],
-               stack: str, revision_notes: str = "", layout: str = "") -> TaskResult[Wbs]:
-    """The Architect's work breakdown: packages -> small tasks, each owning paths with a verify command."""
+               stack: str, revision_notes: str = "", layout: str = "",
+               allowed: dict[str, list[str]] | None = None) -> TaskResult[Wbs]:
+    """The Architect's work breakdown: packages -> small tasks, each owning paths with a verify command.
+    `allowed`: component -> the command prefixes its verify command may use."""
     return runner.run(
         PHASE,
         "design_wbs",
@@ -81,11 +84,13 @@ def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, work
             "solution": architecture.solution_summary(),
             "stack": stack,
             "layout": layout or NO_LAYOUT,
-            "workdirs": "\n".join(f"- {c}: {w}/" for c, w in workdirs.items()),
+            "workdirs": "\n".join(
+                f"- {c}: {w}/ (verify with: {', '.join((allowed or {}).get(c, [])) or 'any listed command'})"
+                for c, w in workdirs.items()),
             "revision_notes": revision_notes or "(none)",
         },
         Wbs,
-        guardrail=artifact_guardrail(Wbs, lambda w: wbs_errors(w, prd, architecture, workdirs)),
+        guardrail=artifact_guardrail(Wbs, lambda w: wbs_errors(w, prd, architecture, workdirs, allowed)),
     )
 
 

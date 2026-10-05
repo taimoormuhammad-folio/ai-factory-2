@@ -35,6 +35,11 @@ guardrails:
   agents: [DV1, DV2, DV3, QA1, QA2, DE1, ST1]
 
 build:
+  # Test Writer writes acceptance tests per milestone before the build; they must fail first, then
+  # they are locked (tests.lock) and builders may not change them.
+  acceptance_tests: true
+  # Backend (+infra) and frontend lanes build at the same time; app tasks work against the contract.
+  parallel: true
   milestones: []
   sandbox: local
   check_fix_attempts: 1

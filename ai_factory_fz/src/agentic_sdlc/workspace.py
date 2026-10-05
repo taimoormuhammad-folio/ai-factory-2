@@ -102,8 +102,12 @@ class Workspace:
     def load_state_json(self) -> str:
         return (self.root / STATE_FILE).read_text(encoding="utf-8")
 
-    def commit(self, message: str) -> str | None:
-        """Commit everything in the workspace. Returns the commit sha, or None if nothing changed."""
+    # Pipeline bookkeeping a checkpoint may commit while builders are still working on code (parallel build).
+    BOOKKEEPING = ("state.json", "status.md", "blocked.md", "tests.lock", "reports", "docs", "gates")
+
+    def commit(self, message: str, paths: list[str] | tuple[str, ...] | None = None) -> str | None:
+        """Commit everything in the workspace, or only `paths` (files or folders). Returns the commit sha,
+        or None if nothing changed."""
         import os
 
         # Avoid interactive prompts / credential helpers hanging headless worker runs.
@@ -119,7 +123,14 @@ class Workspace:
                     lock.unlink()
                 except OSError:
                     pass
-            repo.git.add(A=True)
+            if paths is None:
+                repo.git.add(A=True)
+            else:
+                existing = [p for p in dict.fromkeys(paths) if p and (self.root / p).exists()]
+                tracked_gone = [p for p in dict.fromkeys(paths) if p and not (self.root / p).exists()
+                                and repo.head.is_valid() and repo.git.ls_files("--", p)]
+                if existing or tracked_gone:
+                    repo.git.add("-A", "--", *existing, *tracked_gone)
             if repo.head.is_valid() and not repo.index.diff("HEAD"):
                 return None
             return repo.index.commit(message, author=_AUTHOR, committer=_AUTHOR).hexsha

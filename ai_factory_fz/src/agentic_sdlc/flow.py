@@ -101,10 +101,11 @@ class SDLCFlow(Flow[ProjectState]):
         assert self._deps is not None, "init_run has not run"
         return self._deps
 
-    def _checkpoint(self, message: str) -> None:
+    def _checkpoint(self, message: str, paths: list[str] | tuple[str, ...] | None = None) -> None:
+        """Save state and status, and commit (only `paths` while builders work in parallel)."""
         self.deps.workspace.save_state(self.state)
         self.deps.workspace.write_text("status.md", self._status_markdown(message))
-        self.deps.workspace.commit(message)
+        self.deps.workspace.commit(message, paths)
 
     def _status_markdown(self, last_step: str) -> str:
         """status.md: the run at a glance, rewritten at every checkpoint."""
@@ -338,9 +339,11 @@ class SDLCFlow(Flow[ProjectState]):
         if self.state.architecture is not None and self.state.wbs is None and self._can_continue():
             profile = self.deps.profile
             workdirs = {name: c.workdir for name, c in profile.components.items()}
+            allowed = {name: profile.sandbox.allowed_commands.get(c.runtime, []) if c.runtime else []
+                       for name, c in profile.components.items()}
             self.state.wbs = self._record(planning.design_wbs(
                 self.deps.runner, self.state.prd, self.state.architecture, workdirs, profile.stack_summary(),
-                notes, layout=profile.layout_summary()))
+                notes, layout=profile.layout_summary(), allowed=allowed))
             ws.save_artifact("wbs", self.state.wbs, agent="architect", inputs=["docs/spec.md", "docs/design.md"])
             self._checkpoint("Design: work breakdown structure")
 

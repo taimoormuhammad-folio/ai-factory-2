@@ -47,7 +47,8 @@ design_wbs:
     Repository layout (fixed by the build tooling):
     {layout}
 
-    Component folders (a task owns paths only inside its component's folder):
+    Component folders (a task owns paths only inside its component's folder) and the commands its
+    verify command may start with:
     {workdirs}
 
     Reviewer feedback on the previous version (address all of it, empty if first draft):
@@ -58,7 +59,9 @@ design_wbs:
       command that proves it works (e.g. npm test -- cart, flutter test test/cart), the stories and
       the acceptance criteria (AC-..) it makes pass, and its dependencies.
     - Ownership: frontend, backend and infra tasks never own the same paths (they are built in
-      parallel); keep tasks small (about a day of work).
+      parallel). A task owns every file it changes, including shared wiring it must edit (e.g. the
+      backend's app module registration, the app's router); dependency manifests are always allowed.
+      Keep tasks small (about a day of work). Components without commands (infra) verify with "-".
     - Coverage: every must-have acceptance criterion has a task; every API operation is implemented by
       a backend task; every data model is covered. App tasks that call an operation depend on the
       backend task that implements it. Project setup and infrastructure (Dockerfile, compose, CI) are
@@ -281,7 +284,35 @@ qa_milestone:
     Report each real defect as a bug with the work item it belongs to. Severity: blocker (breaks
     the milestone goal or security), major (an acceptance criterion is not met), minor (other).
     Set milestone_id to {milestone_id}. passed is true only when there are no blocker or major bugs.
+
+    Locked acceptance tests (written before the build; a failing one means its criterion is not met,
+    report it as a major bug for the task that serves the criterion):
+    {acceptance}
   expected_output: A QA report.
+
+write_acceptance_tests:
+  agent: test_writer
+  description: |
+    Write the acceptance tests for milestone {milestone}, component {component}, BEFORE the code exists.
+
+    Acceptance criteria to prove (one or more tests each; put the criterion id in the test name):
+    {criteria}
+
+    How to work:
+    {tooling}
+
+    Read the API contract ({docs_dir}/api-contract.yaml), the spec ({docs_dir}/spec.md) and, for app
+    tests, the UI design ({docs_dir}/ui-design.md: screens, states and test keys).
+
+    Rules:
+    - Write the tests only in {folder}/ (one file per criterion is fine). {runner_note}
+    - Test behaviour through the public surface: HTTP calls against the app module for the backend
+      (the SuiteCommerce or other external services faked at their HTTP boundary), widgets found by
+      Key for the app. Use the contract's exact paths, fields and status codes.
+    - Never write application code, stubs or fakes of the code under test: the tests must fail now,
+      because the feature is not built yet. The pipeline runs `{command}` and requires it to fail.
+    - If a criterion cannot be tested as written, set blocked and say why instead of guessing.
+  expected_output: The tests written, each with its criterion id, file and test name.
 
 # ---------- release phase (M4) ----------
 

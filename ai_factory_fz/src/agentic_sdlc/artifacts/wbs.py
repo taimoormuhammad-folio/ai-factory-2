@@ -5,7 +5,7 @@ sequences and estimates these tasks (artifacts/plan.py) but may not change them.
 WBS checks (sent back to the Architect before the design gate):
   W1 ownership   every task owns paths inside its component's folder; frontend, backend and infra tasks
                  never own the same paths (they may be built in parallel)
-  W2 verify      every task has a verify command
+  W2 verify      every task has a verify command the build may run (an allowed command of its component)
   W3 coverage    every must-have acceptance criterion, API operation and data model has a task
 """
 
@@ -82,8 +82,20 @@ class Wbs(BaseModel):
                                           f"give each path one owner")
         return errors
 
-    def w2_verify(self) -> list[str]:
-        return [f"W2: {t.id} has no verify command" for t in self.tasks if not t.verify.strip()]
+    def w2_verify(self, allowed: dict[str, list[str]] | None = None) -> list[str]:
+        """`allowed`: component -> command prefixes its sandbox runs (no entry: any command)."""
+        errors = []
+        for t in self.tasks:
+            if not t.verify.strip():
+                errors.append(f"W2: {t.id} has no verify command")
+                continue
+            prefixes = (allowed or {}).get(t.component)
+            if prefixes == [] and t.verify.strip() == "-":
+                continue                       # a component that runs no commands (e.g. infra files)
+            if prefixes is not None and not any(t.verify.split()[:len(p.split())] == p.split() for p in prefixes):
+                errors.append(f"W2: {t.id} verify command `{t.verify}` is not allowed for {t.component}; "
+                              f"start it with one of: {', '.join(prefixes) or '(none: this component runs no commands)'}")
+        return errors
 
     def w3_coverage(self, must_ac_ids: list[str], known_ac_ids: set[str], operations: dict[str, str],
                     data_models: list[str]) -> list[str]:

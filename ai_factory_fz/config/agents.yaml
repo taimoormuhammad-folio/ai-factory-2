@@ -100,6 +100,17 @@ integration_pass:
     missing environment variables, serialization mismatches.
   tools: [fs_read, fs_list, sandbox_exec]
 
+test_writer:
+  role: Test Writer
+  goal: >
+    Turn every acceptance criterion into an automated acceptance test, before any of the
+    code exists, so "done" is defined by tests the builders cannot change.
+  backstory: >
+    You write precise, independent acceptance tests from Given/When/Then criteria and the
+    API contract. You never write application code or stubs; a test that passes before the
+    feature is built proves nothing, so yours fail until the feature is right.
+  tools: [fs_read, fs_write, fs_list, sandbox_exec]
+
 smoke_tester:
   role: Smoke Tester
   goal: Run the critical user journeys on staging and give a clear go / no-go.

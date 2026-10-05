@@ -40,6 +40,11 @@ components:
     workdir: server
     runtime: node
     checks: [npm run build, npm test]
+    # Locked acceptance tests (Test Writer, before the build); run at each milestone.
+    acceptance:
+      dir: server/test/acceptance
+      command: npm run test:acceptance
+      note: Add an npm script "test:acceptance" to server/package.json that runs only this folder with the project's test runner.
     scaffold:
       # Keep the @nestjs/* majors in step with the CLI major.
       - run: npx -y @nestjs/cli@12 new server --package-manager npm --skip-git --strict
@@ -61,6 +66,9 @@ components:
     workdir: app
     runtime: flutter
     checks: [flutter analyze, flutter test]
+    acceptance:
+      dir: app/test/acceptance
+      command: flutter test test/acceptance
     scaffold:
       - run: flutter create --org com.shopease --project-name shopease_app --platforms android,ios app
         creates: app/pubspec.yaml
@@ -165,6 +173,7 @@ sandbox:
       - npm run lint
       - npm test
       - npm run test
+      - npm run test:acceptance
       - npx prisma generate
       - npx prisma validate
       - npx prisma format

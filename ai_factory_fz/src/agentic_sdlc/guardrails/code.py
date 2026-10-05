@@ -8,6 +8,7 @@ A violation goes back to the same agent as feedback (like a failing build), so i
 """
 
 import fnmatch
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,56 @@ def dv2_secrets(ws: Workspace, profile: Profile, files: list[str]) -> list[str]:
     return errors
 
 
+# Written by the pipeline itself (agents cannot write them: hooks + disallowed tools); not a task's change.
+PIPELINE_FILES = {".gitignore", "state.json", "status.md", "blocked.md", "tests.lock"}
+PIPELINE_FOLDERS = ("docs/", "gates/", ".sdlc/")
+
+# Files at the root of a component folder a task may always touch (dependency manifests and lock files).
+MANIFESTS = {"package.json", "package-lock.json", "pubspec.yaml", "pubspec.lock"}
+
+
+def owned(path: str, globs: list[str]) -> bool:
+    """True if `path` is one of the task's owned paths (a file, a folder, or a glob such as src/cart/**)."""
+    for g in globs:
+        g = g.strip().strip("/")
+        if any(ch in g for ch in "*?["):
+            if fnmatch.fnmatch(path, g) or fnmatch.fnmatch(path, g.replace("/**", "/**/*")):
+                return True
+            base = g.split("*")[0].rstrip("/")
+            if g.endswith("/**") and (path == base or path.startswith(base + "/")):
+                return True
+        elif path == g or path.startswith(g + "/"):
+            return True
+    return False
+
+
+def dv3_ownership(comp: Component, profile: Profile, files: list[str], owns: list[str],
+                  ignore_prefixes: tuple[str, ...] = ()) -> list[str]:
+    """Changes stay inside the task's owned paths (from the WBS), plus the component's manifests."""
+    extra = list(profile.guardrails.get("scope_also_allowed") or [])
+    folder = comp.workdir.rstrip("/")
+    errors = []
+    for f in files:
+        if any(f.startswith(p) for p in (*SCOPE_INFRA_PREFIXES, *ignore_prefixes)) or f in PIPELINE_FILES \
+                or f.startswith(PIPELINE_FOLDERS):
+            continue
+        manifest = f.rsplit("/", 1)[-1] in MANIFESTS and (folder in (".", "") or f.startswith(folder + "/"))
+        if not (owned(f, owns) or owned(f, extra) or manifest):
+            errors.append(f"DV3: {f} is outside the paths this task owns ({', '.join(owns)}); undo that change")
+    return errors
+
+
+def dv1_locked(ws: Workspace, files: list[str], locked: dict[str, str]) -> list[str]:
+    """Locked acceptance tests (tests.lock) may not change: they are the agreed definition of done."""
+    errors = []
+    for path, digest in locked.items():
+        p = ws.root / path
+        current = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+        if path in files or current != digest:
+            errors.append(f"DV1: {path} is a locked acceptance test; restore it and change the code instead")
+    return errors
+
+
 def dv3_scope(ws: Workspace, comp: Component, profile: Profile, files: list[str]) -> list[str]:
     errors = []
     if comp.workdir not in (".", ""):
@@ -144,14 +195,32 @@ def dv3_scope(ws: Workspace, comp: Component, profile: Profile, files: list[str]
     return errors
 
 
-def check_changes(ws: Workspace, comp: Component, profile: Profile, rules: set[str]) -> list[str]:
-    """Guardrail problems in the uncommitted changes of one work item (empty = ok to commit)."""
-    files = changed_files(ws)
+def check_changes(ws: Workspace, comp: Component, profile: Profile, rules: set[str], owns: list[str] | None = None,
+                  locked: dict[str, str] | None = None, ignore_prefixes: tuple[str, ...] = ()) -> list[str]:
+    """Guardrail problems in the uncommitted changes of one work item (empty = ok to commit).
+    `owns`: the task's owned paths (WBS); `locked`: locked acceptance tests; `ignore_prefixes`: folders
+    another builder is working in right now (parallel build), checked by that builder instead."""
+    files = [f for f in changed_files(ws) if not any(f.startswith(p) for p in ignore_prefixes)]
     errors = []
     if "DV1" in rules:
         errors += dv1_tests(ws, comp, profile, files)
+        errors += dv1_locked(ws, files, locked or {})
     if "DV2" in rules:
         errors += dv2_secrets(ws, profile, files)
     if "DV3" in rules:
-        errors += dv3_scope(ws, comp, profile, files)
+        errors += dv3_ownership(comp, profile, files, owns, ignore_prefixes) if owns else dv3_scope(ws, comp, profile, files)
+        if owns:
+            errors += _contract_copy_errors(ws, profile, files)       # contract copies apply either way
+    return errors
+
+
+def _contract_copy_errors(ws: Workspace, profile: Profile, files: list[str]) -> list[str]:
+    errors = []
+    for source, copies in (profile.guardrails.get("contract_copies") or {}).items():
+        src = ws.root / source
+        for copy in copies:
+            dst = ws.root / copy
+            if src.exists() and dst.exists() and copy in files and dst.read_bytes() != src.read_bytes():
+                errors.append(f"DV3: {copy} must stay identical to the approved {source}; "
+                              "contract changes go through the Architect and the design gate (G2)")
     return errors

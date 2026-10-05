@@ -17,6 +17,7 @@ class FakeSandbox:
         self.unavailable = unavailable or {}
         self.check_results = list(check_results or [])  # consumed by checks; default ok
         self.commands: list[tuple[str, str, str]] = []
+        self.results_for: dict[str, list] = {}   # command -> queued results (verify / acceptance runs)
 
     def unavailable_reason(self, runtime):
         return self.unavailable.get(runtime)
@@ -27,8 +28,17 @@ class FakeSandbox:
 
     def run_trusted(self, runtime, workdir, command, env=None, host_network=False, timeout_s=None):
         self.commands.append((runtime, workdir, command))
+        if command in self.results_for and self.results_for[command]:
+            return self.results_for[command].pop(0)
         if command.startswith("check") and self.check_results:
             return self.check_results.pop(0)
+        return SandboxResult(exit_code=0, output="ok")
+
+    def run(self, runtime, workdir, command):
+        """Agent/WBS commands (verify): recorded, and they pass unless a result is queued for them."""
+        self.commands.append((runtime, workdir, command))
+        if self.results_for.get(command):
+            return self.results_for[command].pop(0)
         return SandboxResult(exit_code=0, output="ok")
 
 
@@ -80,7 +90,7 @@ def make_builder(tmp_path, prd, profile, items, milestones, sandbox=None, worker
         stops.append(reason)
 
     b = Builder(state, ws, profile, sandbox, lambda agent: worker, cfg or BuildConfig(milestones=[]),
-                record=lambda r: r.artifact, checkpoint=lambda msg: None,
+                record=lambda r: r.artifact, checkpoint=lambda msg, paths=None: None,
                 can_continue=lambda: state.status == "running", stop=stop)
     return b, state, sandbox, worker
 

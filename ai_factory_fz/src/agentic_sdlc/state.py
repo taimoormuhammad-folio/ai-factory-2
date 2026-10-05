@@ -13,6 +13,7 @@ from agentic_sdlc.artifacts.plan import DeliveryPlan
 from agentic_sdlc.artifacts.wbs import Wbs
 from agentic_sdlc.artifacts.prd import PRD, ProductBrief, QAPair
 from agentic_sdlc.artifacts.reports import QAReport, WorkItemResult
+from agentic_sdlc.artifacts.tests import AcceptanceSuite
 
 
 def utcnow() -> str:
@@ -66,6 +67,8 @@ class MilestoneProgress(BaseModel):
 
 class BuildState(BaseModel):
     scaffolded: list[str] = Field(default_factory=list)  # components whose project exists
+    locked_tests: dict[str, str] = Field(default_factory=dict)        # acceptance test file -> sha256
+    acceptance: dict[str, AcceptanceSuite] = Field(default_factory=dict)   # "<milestone>/<component>" -> suite
     items: dict[str, ItemProgress] = Field(default_factory=dict)
     milestones: dict[str, MilestoneProgress] = Field(default_factory=dict)
 

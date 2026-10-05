@@ -1,25 +1,37 @@
 """The build loop: for each milestone, implement its work items, verify them, then QA.
 
-Per work item: scaffold the component if needed -> the developer agent implements it ->
-the component's checks run (build, tests) -> on failure the agent gets the output and fixes
-it (limited attempts) -> commit. Items whose toolchain is missing, or whose dependencies are
-blocked, are marked blocked with a reason instead of failing the run.
+Per milestone (build.acceptance_tests): the Test Writer writes acceptance tests for the milestone's
+criteria before any code; they must fail, then they are locked (tests.lock).
 
-Per milestone: the QA agent verifies the acceptance criteria and reports bugs -> developers
-fix blocking bugs -> checks -> QA again, up to qa_fix_rounds. If bugs remain, the run stops
-for a human to look.
+Per work item: scaffold the component if needed -> the developer agent implements it, writing only the
+paths the task owns (Claude Code hooks block anything else live) -> guardrails (no weakened or changed
+locked tests, no secrets, ownership) -> the component's checks and the task's verify command -> on
+failure the agent gets the output and fixes it (limited attempts) -> commit + build notes. Items whose
+toolchain is missing, or whose dependencies are blocked, are marked blocked with a reason.
+With build.parallel the backend lane and the frontend lane build at the same time (app tasks work
+against the contract, so they do not wait for backend tasks); git access is serialised.
+
+Then the locked acceptance tests run, and the QA agent verifies the milestone and reports bugs ->
+developers fix blocking bugs -> checks -> QA again, up to qa_fix_rounds. If bugs remain, the run
+stops for a human to look.
 
 All progress lives in ProjectState.build and is checkpointed after every step, so a resumed
 run continues where it stopped.
 """
 
+import hashlib
+import json
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from agentic_sdlc.artifacts.backlog import Milestone, WorkItem
 from agentic_sdlc.artifacts.reports import Bug, QAReport, WorkItemResult
+from agentic_sdlc.artifacts.tests import AcceptanceSuite, test_plan_markdown
+from agentic_sdlc.artifacts.wbs import _prefix as owned_prefix
 from agentic_sdlc.build.coders import Job, Worker
 from agentic_sdlc.build.scaffold import ScaffoldError, required_runtimes, scaffold
 from agentic_sdlc.guardrails import agents as agent_guardrails
@@ -27,7 +39,7 @@ from agentic_sdlc.guardrails import code as code_guardrails
 from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
 from agentic_sdlc.registry.profiles import Component, Profile
 from agentic_sdlc.state import ProjectState
-from agentic_sdlc.tools.sandbox_exec import SandboxRunner
+from agentic_sdlc.tools.sandbox_exec import SandboxRejected, SandboxRunner
 from agentic_sdlc.workspace import Workspace
 from agentic_sdlc.workspace_layout import component_workdir
 
@@ -53,6 +65,8 @@ class BuildConfig:
     check_fix_attempts: int = 2
     qa_fix_rounds: int = 3
     guard_rules: set[str] = field(default_factory=set)   # agent guardrails on (DV*, QA*)
+    acceptance_tests: bool = False   # Test Writer writes locked acceptance tests before each milestone
+    parallel: bool = False           # backend and frontend lanes build at the same time
 
     @classmethod
     def from_pipeline(cls, pipeline: dict[str, Any]) -> "BuildConfig":
@@ -64,6 +78,8 @@ class BuildConfig:
             check_fix_attempts=b.get("check_fix_attempts", 2),
             qa_fix_rounds=pipeline.get("limits", {}).get("qa_fix_rounds", 3),
             guard_rules=agent_guardrails.enabled(pipeline),
+            acceptance_tests=bool(b.get("acceptance_tests", False)),
+            parallel=bool(b.get("parallel", False)),
         )
 
 
@@ -93,6 +109,46 @@ class Builder:
         self.stop = stop
         self.items: dict[str, WorkItem] = {w.id: w for w in state.backlog.work_items}
         self._unavailable: dict[str, str] = {}  # component -> reason
+        self._git = threading.RLock()            # one git/state writer at a time (parallel lanes)
+        self._parallel_now = False
+        self._lane_prefixes: dict[str, tuple[str, ...]] = {}   # lane -> folders it writes (parallel)
+        self._soft_deps: set[str] = set()        # other-lane items a lane does not wait for (parallel)
+        self._acceptance_text: dict[str, str] = {}
+
+    # ---------- git / state (shared by the lanes) ----------
+
+    def _save(self, message: str, paths: list[str] | None = None) -> None:
+        """Checkpoint; while lanes run in parallel, only bookkeeping (and `paths`) is committed."""
+        with self._git:
+            if self._parallel_now:
+                self.checkpoint(message, [*Workspace.BOOKKEEPING, *(paths or [])])
+            elif paths is not None:
+                self.checkpoint(message, [*Workspace.BOOKKEEPING, *paths])
+            else:
+                self.checkpoint(message)
+
+    @staticmethod
+    def lane(item: WorkItem) -> str:
+        return "frontend" if item.component == "frontend" else "main"
+
+    def _write_paths(self, item: WorkItem, comp: Component) -> list[str]:
+        """Folders/files this item's commit and discard cover."""
+        if comp.workdir not in (".", ""):
+            return [comp.workdir]
+        return [p for p in (owned_prefix(g) for g in item.owns) if p] or ["."]
+
+    def _ignore_for(self, item: WorkItem) -> tuple[str, ...]:
+        """While lanes run in parallel: the other lane's folders, which this item's checks skip."""
+        if not self._parallel_now:
+            return ()
+        mine = self.lane(item)
+        return tuple(p.rstrip("/") + "/" for lane, ps in self._lane_prefixes.items() if lane != mine for p in ps)
+
+    def policy(self, item: WorkItem | None, comp: Component) -> dict[str, Any]:
+        """Hook policy for a coding job (hooks/guard.py)."""
+        extra = [*(self.profile.guardrails.get("scope_also_allowed") or []), "reports/"]
+        return {"owns": list(item.owns) if item else [], "workdir": comp.workdir,
+                "locked": sorted(self.s.build.locked_tests), "also_allowed": extra}
 
     # ---------- selection ----------
 
@@ -138,19 +194,58 @@ class Builder:
                 log.info("Reopened milestone %s for incomplete work items", m.id)
             # A partial milestone is retried: blocked/failed items get another go, since the
             # cause (a missing toolchain, a setup error) may have been fixed since.
-            newly_done = False
-            for item in self.ordered_items(m):
+            if self.cfg.acceptance_tests:
+                self.write_acceptance_tests(m)
                 if not self.can_continue():
                     return
-                was_done = self.s.build.item(item.id).status == "done"
-                self.build_item(m, item)
-                newly_done |= not was_done and self.s.build.item(item.id).status == "done"
+            items = self.ordered_items(m)
+            before = {i.id for i in items if self.s.build.item(i.id).status == "done"}
+            if self.cfg.parallel:
+                self.build_lanes(m, items)
+            else:
+                for item in items:
+                    if not self.can_continue():
+                        return
+                    self.build_item(m, item)
+            newly_done = any(self.s.build.item(i.id).status == "done" and i.id not in before for i in items)
             if not self.can_continue():
                 return
             if mp.status == "todo" or newly_done or mp.status == "failed":
+                self._acceptance_text[m.id] = self.run_acceptance(m)
                 self.qa_milestone(m)
             if self.s.status != "running":
                 return
+
+    def build_lanes(self, m: Milestone, items: list[WorkItem]) -> None:
+        """Backend (+infra) and frontend lanes at the same time; each lane builds its items in order."""
+        lanes: dict[str, list[WorkItem]] = {}
+        for item in items:
+            lanes.setdefault(self.lane(item), []).append(item)
+        if len(lanes) < 2:
+            for item in items:
+                if not self.can_continue():
+                    return
+                self.build_item(m, item)
+            return
+        for item in items:                       # set up projects first, one at a time
+            self.ensure_scaffold(item.component, self.component(item))
+        self._lane_prefixes = {lane: tuple(dict.fromkeys(p for i in its for p in self._write_paths(i, self.component(i))))
+                               for lane, its in lanes.items()}
+        self._soft_deps = {i.id for i in items}
+        self._parallel_now = True
+
+        def run_lane(lane_items: list[WorkItem]) -> None:
+            for item in lane_items:
+                if not self.can_continue():
+                    return
+                self.build_item(m, item)
+
+        try:
+            with ThreadPoolExecutor(max_workers=len(lanes), thread_name_prefix="lane") as pool:
+                for future in [pool.submit(run_lane, its) for its in lanes.values()]:
+                    future.result()
+        finally:
+            self._parallel_now, self._soft_deps, self._lane_prefixes = False, set(), {}
 
     def prepare_toolchains(self, milestones: list[Milestone]) -> None:
         """Make the toolchains for the components still to build ready (e.g. pull Docker images)."""
@@ -178,6 +273,8 @@ class Builder:
 
     def block_reason(self, item: WorkItem) -> str | None:
         for dep in item.depends_on:
+            if dep in self._soft_deps and self.lane(self.items[dep]) != self.lane(item):
+                continue        # parallel: the other lane builds it; this task works against the contract
             dp = self.s.build.items.get(dep)
             if dp is None or dp.status != "done":
                 state = dp.status if dp else "not built (outside the selected milestones)"
@@ -202,7 +299,7 @@ class Builder:
             return self._unavailable[name]
         self.s.build.scaffolded.append(name)
         self.ws.write_text(f"reports/scaffold_{name}.log", "\n".join(steps) + "\n")
-        self.checkpoint(f"Build: scaffold {name}")
+        self._save(f"Build: scaffold {name}")
         return None
 
     def run_checks(self, comp: Component) -> tuple[bool, str]:
@@ -230,7 +327,15 @@ class Builder:
         parts = [(label, values) for label, values in (
             ("API operations", item.api_operations), ("data models", item.data_models),
             ("screens", item.screens), ("modules", item.modules)) if values]
-        return ("\nPlanned scope: " + "; ".join(f"{label}: {', '.join(v)}" for label, v in parts)) if parts else ""
+        text = ("\nPlanned scope: " + "; ".join(f"{label}: {', '.join(v)}" for label, v in parts)) if parts else ""
+        if item.owns:
+            text += (f"\nYou may write only these paths (the Architect's WBS; anything else is blocked): "
+                     f"{', '.join(item.owns)} (dependency manifests are always allowed).")
+        if item.verify and item.verify.strip() != "-":
+            text += f"\nDone means the checks pass and this verify command passes: `{item.verify}`."
+        if item.ac_ids:
+            text += f"\nAcceptance criteria this task makes pass: {', '.join(item.ac_ids)} (locked acceptance tests prove them)."
+        return text
 
     def done_summary(self) -> str:
         lines = [f"- {wid} {self.items[wid].title}: {p.summary[:200]}" for wid, p in self.s.build.items.items()
@@ -259,18 +364,34 @@ class Builder:
         reason = self.block_reason(item) or self.ensure_scaffold(item.component, self.component(item))
         if reason:
             p.status, p.reason = "blocked", reason
-            self.checkpoint(f"Build: {item.id} blocked")
+            self._save(f"Build: {item.id} blocked")
             return
 
         outcome, result, detail = self._work_until_green(m, item, comp, "implement_work_item", "")
         if outcome == "done":
             p.status, p.summary, p.reason = "done", result.summary, ""
-            p.commit = self.ws.commit(f"{item.id}: {item.title} ({comp.agent})")
+            with self._git:
+                files = [f for f in code_guardrails.changed_files(self.ws) if not f.startswith(self._ignore_for(item))]
+                self.write_build_note(item, comp, result, files)
+                p.commit = self.ws.commit(f"{item.id}: {item.title} ({comp.agent})",
+                                          [*self._write_paths(item, comp), "docs", "reports"])
         elif outcome == "blocked":
             p.status, p.reason, p.summary = "blocked", detail, result.summary if result else ""
         else:
             p.status, p.reason = "failed", detail
-        self.checkpoint(f"Build: {item.id} {p.status}")
+        self._save(f"Build: {item.id} {p.status}")
+
+    def write_build_note(self, item: WorkItem, comp: Component, result: WorkItemResult, files: list[str]) -> None:
+        """docs/build-notes-<component>.md: what each task did, how it was verified, which files changed."""
+        path = self.ws.root / "docs" / f"build-notes-{item.component}.md"
+        head = "" if path.exists() else f"# Build notes: {item.component}\n\n"
+        verify = item.verify if item.verify and item.verify.strip() != "-" else "(none)"
+        note = (f"## {item.id} {item.title}\n\n{result.summary}\n\n- Agent: {comp.agent}\n"
+                f"- Checks: {'; '.join(comp.checks) or '(none)'}; verify: `{verify}`: passed\n"
+                f"- Criteria: {', '.join(item.ac_ids) or '-'}\n- Files: {', '.join(files[:40]) or '-'}\n\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(head + note)
 
     def _work_until_green(self, m: Milestone, item: WorkItem, comp: Component, first_task: str,
                           problems: str) -> tuple[str, WorkItemResult | None, str]:
@@ -283,9 +404,9 @@ class Builder:
         code_rules = self.cfg.guard_rules & set(code_guardrails.CODE_RULES)
         for attempt in range(1, self.cfg.check_fix_attempts + 2):
             p.attempts += 1
-            result = self._work(comp, task_key, self.item_inputs(m, item, comp, problems))
+            result = self._work(comp, task_key, self.item_inputs(m, item, comp, problems), self.policy(item, comp))
             if result is None:
-                code_guardrails.discard_changes(self.ws, comp.workdir)
+                self._discard(item, comp)
                 return "failed", None, "the developer agent failed (see reports/agent_failures and logs)"
             if result.blocked:
                 if _agent_sandbox_block_is_retryable(result.blocked_reason):
@@ -299,23 +420,48 @@ class Builder:
                     return "blocked", result, result.blocked_reason or "agent reported blocked"
             task_key = "fix_work_item"
             profile_comp = self.component(item)
-            violations = (
-                code_guardrails.check_changes(self.ws, profile_comp, self.profile, code_rules) if code_rules else []
-            )
+            with self._git:
+                violations = (
+                    code_guardrails.check_changes(self.ws, profile_comp, self.profile, code_rules, owns=item.owns,
+                                                  locked=self.s.build.locked_tests, ignore_prefixes=self._ignore_for(item))
+                    if code_rules else []
+                )
             if violations:
                 output = "\n".join(violations)
                 problems = f"Guardrails rejected your change. Fix all of these:\n{output}"
                 continue
             ok, output = self.run_checks(comp)
             if ok:
+                ok, output = self.run_verify(item, comp)
+            if ok:
                 return "done", result, ""
             problems = f"The checks failed after your change. Fix the cause.\n{output}"
         # Nothing half-done may slip into the next item's commit.
-        code_guardrails.discard_changes(self.ws, comp.workdir)
+        self._discard(item, comp)
         return "failed", result, f"still failing after {attempt} attempt(s); changes discarded. Last output:\n{output[-1500:]}"
 
-    def _work(self, comp: Component, task_key: str, inputs: dict[str, Any]) -> WorkItemResult | None:
-        job = Job(PHASE, comp.agent, task_key, inputs, WorkItemResult, comp.workdir, comp.runtime)
+    def _discard(self, item: WorkItem, comp: Component) -> None:
+        with self._git:
+            for path in self._write_paths(item, comp):
+                code_guardrails.discard_changes(self.ws, path)
+
+    def run_verify(self, item: WorkItem, comp: Component) -> tuple[bool, str]:
+        """The task's own verify command (from the WBS), run on the sandbox allow-list."""
+        cmd = (item.verify or "").strip()
+        if not cmd or cmd == "-" or not comp.runtime:
+            return True, ""
+        try:
+            result = self.sandbox.run(comp.runtime, comp.workdir, cmd)
+        except SandboxRejected as e:
+            log.warning("Verify command of %s not run: %s", item.id, e)
+            return True, ""
+        if not result.ok:
+            return False, f"The task's verify command `{cmd}` failed (exit {result.exit_code}):\n{result.output[-6000:]}"
+        return True, ""
+
+    def _work(self, comp: Component, task_key: str, inputs: dict[str, Any],
+              policy: dict[str, Any] | None = None) -> WorkItemResult | None:
+        job = Job(PHASE, comp.agent, task_key, inputs, WorkItemResult, comp.workdir, comp.runtime, policy=policy)
         try:
             return self.record(self.worker_for(comp.agent).run(job))
         except UsageLimitError as e:
@@ -324,6 +470,117 @@ class Builder:
         except PhaseError as e:
             log.error("%s", e)
             return None
+
+    # ---------- acceptance tests (Test Writer) ----------
+
+    def _criteria(self, ac_ids: list[str]) -> str:
+        by_id = {c.id: (sid, c) for sid, c in self.s.prd.criteria()}
+        stories = {st.id: st for st in self.s.prd.user_stories}
+        lines = []
+        for ac in ac_ids:
+            if ac in by_id:
+                sid, c = by_id[ac]
+                lines.append(f"- {ac} ({sid} {stories[sid].title}): Given {c.given}, when {c.when}, then {c.then}")
+        return "\n".join(lines) or "(none)"
+
+    def _lock(self, folder: str) -> list[str]:
+        """Hash every acceptance test file under `folder` into tests.lock (run root)."""
+        locked = []
+        for f in sorted((self.ws.root / folder).rglob("*")):
+            if f.is_file():
+                rel = f.relative_to(self.ws.root).as_posix()
+                self.s.build.locked_tests[rel] = hashlib.sha256(f.read_bytes()).hexdigest()
+                locked.append(rel)
+        self.ws.write_text("tests.lock", json.dumps(self.s.build.locked_tests, indent=2, sort_keys=True) + "\n")
+        return locked
+
+    def write_acceptance_tests(self, m: Milestone) -> None:
+        """Before the milestone is built: tests per acceptance criterion, which must fail, then locked."""
+        by_comp: dict[str, list[str]] = {}
+        for wid in m.work_item_ids:
+            item = self.items.get(wid)
+            comp = self.profile.components.get(item.component) if item else None
+            if item and comp and comp.acceptance and self.s.build.item(wid).status != "done":
+                by_comp.setdefault(item.component, [])
+                by_comp[item.component] += [a for a in item.ac_ids if a not in by_comp[item.component]]
+        for name, ac_ids in by_comp.items():
+            key = f"{m.id}/{name}"
+            if key in self.s.build.acceptance or not ac_ids or not self.can_continue():
+                continue
+            comp = self.profile.components[name]
+            acc = comp.acceptance
+            if self.ensure_scaffold(name, comp) or any(self.sandbox.unavailable_reason(rt) for rt in required_runtimes(comp)):
+                log.warning("Acceptance tests for %s skipped: %s cannot be set up here", key, name)
+                continue
+            inputs = {"milestone": f"{m.id} {m.name}: {m.goal}", "component": name, "criteria": self._criteria(ac_ids),
+                      "docs_dir": str(self.ws.root / "docs"), "folder": acc.dir, "command": acc.command,
+                      "runner_note": acc.note}
+            policy = {"owns": [acc.dir], "workdir": comp.workdir, "locked": sorted(self.s.build.locked_tests),
+                      "also_allowed": ["reports/"]}
+            feedback = ""
+            for attempt in (1, 2):
+                job = Job(PHASE, "test_writer", "write_acceptance_tests", inputs, AcceptanceSuite, comp.workdir,
+                          comp.runtime, feedback=feedback, policy=policy)
+                try:
+                    suite = self.record(self.worker_for("test_writer").run(job))
+                except UsageLimitError as e:
+                    self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
+                    return
+                except PhaseError as e:
+                    self.stop(f"Test Writer failed on {key}: {e}")
+                    return
+                if suite.blocked:
+                    self.stop(f"Test Writer blocked on {key}: {suite.blocked_reason or 'no reason given'} "
+                              "(answer it, then resume)")
+                    return
+                problems = suite.errors(ac_ids, acc.dir)
+                problems += [f"{t.file} does not exist" for t in suite.tests if not (self.ws.root / t.file).is_file()]
+                with self._git:
+                    problems += code_guardrails.check_changes(self.ws, comp, self.profile, {"DV2", "DV3"}, owns=[acc.dir],
+                                                              locked=self.s.build.locked_tests)
+                if not problems:
+                    run = self.sandbox.run_trusted(comp.runtime, comp.workdir, acc.command)
+                    if run.ok:
+                        problems = [f"`{acc.command}` passes before the feature is built, so the tests prove nothing; "
+                                    "make each test check the criterion's real behaviour"]
+                    else:
+                        self.ws.write_text(f"reports/acceptance_{m.id}_{name}_before.txt", run.output[-20000:])
+                if not problems:
+                    break
+                feedback = "\n".join(problems)
+                code_guardrails.discard_changes(self.ws, acc.dir)
+            else:
+                self.stop(f"Acceptance tests for {key} are not usable after 2 attempts: {feedback[:500]}")
+                return
+            locked = self._lock(acc.dir)
+            self.s.build.acceptance[key] = suite
+            self.ws.write_text("docs/test-plan.md", test_plan_markdown(self.s.build.acceptance))
+            self.ws.commit(f"Tests: {len(locked)} locked acceptance test file(s) for {key} (test_writer)",
+                           [comp.workdir, "tests.lock", "docs", "reports"])
+            self._save(f"Tests: {key} written and locked")
+
+    def run_acceptance(self, m: Milestone) -> str:
+        """Run every locked acceptance suite of the milestone's components; the result goes to QA."""
+        lines = []
+        names = {self.items[w].component for w in m.work_item_ids if w in self.items}
+        for name in sorted(names):
+            comp = self.profile.components.get(name)
+            acc = comp.acceptance if comp else None
+            if not acc or not any(p.startswith(acc.dir.rstrip("/") + "/") for p in self.s.build.locked_tests):
+                continue
+            changed = [p for p, h in self.s.build.locked_tests.items() if p.startswith(acc.dir.rstrip("/") + "/")
+                       and (not (self.ws.root / p).is_file()
+                            or hashlib.sha256((self.ws.root / p).read_bytes()).hexdigest() != h)]
+            run = self.sandbox.run_trusted(comp.runtime, comp.workdir, acc.command)
+            report = f"reports/acceptance_{m.id}_{name}.txt"
+            self.ws.write_text(report, f"$ {acc.command}\nexit {run.exit_code}\n\n{run.output[-20000:]}")
+            verdict = "PASSED" if run.ok else f"FAILED (exit {run.exit_code})"
+            lines.append(f"- {name}: `{acc.command}` {verdict}; full output in {report}")
+            if changed:
+                lines.append(f"  LOCKED TESTS CHANGED (blocker): {', '.join(changed)}")
+            if not run.ok:
+                lines.append("  Last output:\n" + "\n".join("    " + ln for ln in run.output[-1500:].splitlines()))
+        return "\n".join(lines) or "(no locked acceptance tests for this milestone)"
 
     # ---------- QA ----------
 
@@ -334,7 +591,7 @@ class Builder:
         not_done = [i for i in items if i not in done]
         if not done:
             mp.status = "partial"
-            self.checkpoint(f"Build: {m.id} nothing buildable, QA skipped")
+            self._save(f"Build: {m.id} nothing buildable, QA skipped")
             return
 
         session_rounds = 0  # the fix-round limit applies per run, so a resume gets fresh rounds
@@ -360,7 +617,7 @@ class Builder:
             self.fix_bugs(m, bugs)
             if not self.can_continue():
                 break
-        self.checkpoint(f"Build: {m.id} {mp.status}")
+        self._save(f"Build: {m.id} {mp.status}")
 
     def _qa(self, m: Milestone, done: list[WorkItem], not_done: list[WorkItem]) -> QAReport | None:
         runtimes = sorted({self.component(i).runtime for i in done if self.component(i).runtime})
@@ -371,8 +628,10 @@ class Builder:
             "not_built": "\n".join(f"- {i.id} {i.title}: {self.s.build.item(i.id).reason}" for i in not_done) or "(none)",
             "stories": self.stories_text(sorted({sid for i in done for sid in i.story_ids})),
             "docs_dir": str(self.ws.root / "docs"),
+            "acceptance": self._acceptance_text.get(m.id, "(no locked acceptance tests for this milestone)"),
         }
-        job = Job(PHASE, "qa_engineer", "qa_milestone", inputs, QAReport, ".", runtimes[0] if runtimes else None, runtimes[1:])
+        job = Job(PHASE, "qa_engineer", "qa_milestone", inputs, QAReport, ".", runtimes[0] if runtimes else None,
+                  runtimes[1:], policy={"locked": sorted(self.s.build.locked_tests)})
         try:
             report = self.record(self.worker_for("qa_engineer").run(job))
             errors = agent_guardrails.report_errors(report, [i.id for i in done], self.cfg.guard_rules)
@@ -408,4 +667,4 @@ class Builder:
                 self.ws.commit(f"{wid}: fix {', '.join(b.id for b in item_bugs)}")
             else:
                 log.warning("Bug fix on %s did not complete: %s", wid, detail[:300])
-            self.checkpoint(f"Build: {wid} bug fixes")
+            self._save(f"Build: {wid} bug fixes")

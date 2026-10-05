@@ -51,6 +51,8 @@ class Job(Generic[T]):
     runtime: str | None           # toolchain the agent may run commands with
     extra_runtimes: list[str] = field(default_factory=list)
     feedback: str = ""            # guardrail problems from a rejected previous attempt
+    # Hook policy (hooks/guard.py): owned paths, locked tests, ... Enforced live by Claude Code hooks.
+    policy: dict[str, Any] | None = None
 
 
 class Worker(Protocol):
@@ -365,6 +367,25 @@ class ClaudeCodeWorker(_CodeShellWorker):
     def models_for(self, job: Job) -> list[str]:
         return self.agents.models.spec_for(job.agent_key).candidates()
 
+    def hook_settings(self, job: Job) -> str | None:
+        """Write the job's hook policy and a Claude Code settings file that runs the guard; returns its path."""
+        if not job.policy:
+            return None
+        import sys
+        import uuid
+
+        folder = self.workspace.root / ".sdlc" / "hooks"
+        folder.mkdir(parents=True, exist_ok=True)
+        name = uuid.uuid4().hex[:12]
+        policy = folder / f"{name}.policy.json"
+        policy.write_text(json.dumps({"root": str(self.workspace.root), **job.policy}), encoding="utf-8")
+        guard = f'"{sys.executable}" -m agentic_sdlc.hooks.guard "{policy}"'
+        settings = folder / f"{name}.settings.json"
+        settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+            {"matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash", "hooks": [{"type": "command", "command": guard}]},
+        ]}}), encoding="utf-8")
+        return str(settings)
+
     def build_command(self, job: Job, model: str, system: str, prompt: str) -> list[str]:
         docs = str(self.workspace.root / "docs")
         allowed = ["Read", "Glob", "Grep", "Edit", "Write", *self.agents.web_rules(job.agent_key)]
@@ -382,6 +403,7 @@ class ClaudeCodeWorker(_CodeShellWorker):
             "--json-schema", json.dumps(job.output_model.model_json_schema()),
             "--no-session-persistence",
             "--setting-sources", "",
+            *(["--settings", settings] if (settings := self.hook_settings(job)) else []),
             "--strict-mcp-config",
         ]
 

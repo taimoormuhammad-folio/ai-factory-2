@@ -73,3 +73,4 @@ agents:
   integration_pass: balanced
 
   smoke_tester: fast
+  test_writer: balanced
