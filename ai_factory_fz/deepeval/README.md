@@ -5,6 +5,29 @@ This folder is its own `uv` project, so it does not touch the main project's dep
 
 **Status:** DeepEval 4.2.7 is installed. There is one `test_<agent>.py` per agent (11 agent files, 33 tests) plus one end-to-end flow file (12 tests), 45 tests in total. They have been run end to end only against the hand-written sample run `../runs/sample-manual` (see [Trying the tests without a pipeline run](#trying-the-tests-without-a-pipeline-run)), not yet against real pipeline output. Each test skips when the files it needs are missing.
 
+## Quick start (Windows PowerShell)
+
+```powershell
+cd ai_factory_fz\deepeval
+uv sync                                   # once
+$env:PYTHONUTF8=1                         # stops the Windows console crashing on emoji
+
+# Nothing else to set: the LATEST BUILD in ..\runs is scored (newest run id, e.g. 20261004-043044).
+# The first line of the output shows which one. To score another run:
+#   $env:DEEPEVAL_RUN_DIR="..\runs\20261003-044724"
+
+uv run pytest flow_test_writeup/test_end_to_end_flow.py -v    # the whole flow: 12 tests, about 2 minutes
+uv run pytest agent_test_writeup -v                           # every agent: 33 tests, about 5 minutes
+uv run pytest agent_test_writeup/test_architect.py -v         # one agent
+```
+
+- Every test is one judge call (Claude if `ANTHROPIC_API_KEY` is in `.env`), so a run costs tokens. A test passes at a score of 0.6 or above.
+- The run folder needs the files the tests read (see [Input: a pipeline run](#input-a-pipeline-run)). A test whose files are missing is **skipped**, not failed. A run with only `docs/` and QA reports runs about 20 of the 45 tests.
+- Each run prints a pass/fail table with a confidence per agent and writes `eval_report_flow.*`, `eval_report_agents.*` or `eval_report.*` (`.md`, `.json`, `.html`) into the run folder.
+- To start the Project Manager process after the report, set `$env:DEEPEVAL_REMEDIATE=1` first (see [Remediation](#remediation-project-manager)).
+- `uv run deepeval test run <path>` works too, but on Windows it can crash on emoji output; plain `pytest` is the verified way.
+- Test the evaluation code itself (no model calls, no tokens): `uv run pytest remediation/tests unit_tests`.
+
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.10-3.13 (3.12 is pinned in `.python-version`).
@@ -50,8 +73,10 @@ The tests read one run folder, `../runs/<run_id>/`. Besides `docs/`, they use th
 | `infra/docker-compose.staging.yml`, `infra/staging.env`, `infra/README.md`, `.github/workflows/ci.yml` | deployment |
 | `server/smoke/**`, `server/test-smoke/**`, `server/test/**/*smoke*`, `app/integration_test/**/*.dart` | smoke tester |
 
-Choose the run with `DEEPEVAL_RUN_DIR` (a path, for example `../runs/<run_id>` when you run from this folder).
-Without it, the newest folder in `../runs` is used. `SDLC_RUNS_DIR` moves the whole runs folder.
+Which run is scored: `DEEPEVAL_RUN_DIR` if set (a path, for example `../runs/<run_id>` when you run from this folder);
+otherwise **the latest build in `../runs`**, meaning the newest run id (ids start with a timestamp, so they sort by
+time). Scratch folders such as `sample-manual` or `thread-test` are ignored, and the choice does not depend on which
+folder was edited last. `SDLC_RUNS_DIR` moves the whole runs folder. The chosen folder is printed at the top of the output.
 
 To create a run, `ai_factory_fz/.env` needs a Claude credential (`ANTHROPIC_API_KEY`, or
 `CLAUDE_CODE_ENABLE=true` + `CLAUDE_CODE_OAUTH_TOKEN`). Then:
@@ -69,6 +94,38 @@ uv run python run/run_from_briefs.py --brief demo_mini
 
 **Cost:** a full `pipeline.demo` run is capped at 1.5M uncached tokens, and scoring adds about 45 judge calls.
 Add `--dry-run` to the `run/` scripts to see the commands without spending anything.
+
+## Two ways to run: agent by agent, or the complete flow
+
+| | Agent by agent (`agent_test_writeup/`) | Complete flow (`flow_test_writeup/`) |
+|---|---|---|
+| Question it answers | Did this agent do its own job well? | Do all the agents' outputs fit together? |
+| What it judges | One agent's output against that agent's own task criteria and its inputs | Every agent's output against the spec writer's PRD, in pipeline order (PRD vs original brief first) |
+| Size | 11 files, 33 tests | 1 file, 12 tests (11 agents plus a no-LLM check that every agent left output) |
+| Use it to | Find which agent is weak and why | Find where the chain drifts from the PRD |
+
+```powershell
+# One agent (customer, spec_writer, project_manager, architect, ui_ux_designer, backend_developer,
+# frontend_developer, qa_engineer, deployment_engineer, integration_pass, smoke_tester)
+uv run pytest agent_test_writeup/test_spec_writer.py -v
+
+# Every agent, one at a time (11 separate runs; each overwrites eval_report_agents.* with that agent only)
+foreach ($a in "customer","spec_writer","project_manager","architect","ui_ux_designer","backend_developer","frontend_developer","qa_engineer","deployment_engineer","integration_pass","smoke_tester") {
+    uv run pytest "agent_test_writeup/test_$a.py" -q
+}
+
+# Every agent in one session (one combined agents report)
+uv run pytest agent_test_writeup -v
+
+# The complete flow
+uv run pytest flow_test_writeup -v
+
+# Both methods in one session (one combined report, eval_report.*, with each agent's confidence from both)
+uv run pytest agent_test_writeup flow_test_writeup -v
+```
+
+To run the pipeline and score it in one go, use the scripts in `run/` (see `run/README.md`): `--agent <name>` scores one
+agent, `--flow-only` scores only the flow, `--skip-run <run_id>` scores an existing run without building a new one.
 
 ## Running evaluations
 
@@ -123,6 +180,44 @@ The files in the table are in `agent_test_writeup/` except the last one, which i
 - A test **skips** when a file it reads is missing, for example the deployment tests on a run that has no release phase.
 - `test_every_agent_left_output` in the flow file **fails** if any agent produced nothing.
 - A test **fails** when the judge scores below 0.6; the failure message contains the judge's reason.
+
+## Reports
+
+Every run writes its report into the run folder: `eval_report_agents.*` (agent tests only), `eval_report_flow.*`
+(end-to-end flow only), or `eval_report.*` (both), each as `.md`, `.json` and a self-contained `.html`. They hold the
+pass/fail result, a confidence per agent, the judge's reasons, and a written analysis (why the score, strengths,
+gaps, what to improve). Each report starts with a six-step remediation status block.
+
+## Remediation (Project Manager)
+
+When the report is written, a Project Manager process can validate the findings and plan the fixes. It is **opt-in**:
+
+```powershell
+$env:DEEPEVAL_REMEDIATE=1      # then run the tests as usual; the report triggers the process
+```
+
+or by hand, from `ai_factory_fz` (the Project Manager needs the pipeline environment, so use that project's `uv`):
+
+```powershell
+uv run python deepeval/remediate.py run     --run-dir runs/<id> --report runs/<id>/eval_report_flow.json
+uv run python deepeval/remediate.py status  --run-id <id>
+uv run python deepeval/remediate.py approve --run-id <id>
+```
+
+Stage 1 covers steps 1-2 of the six: **1** DeepEval report, **2** Project Manager triage and backlog. The Project
+Manager classifies every finding against the run's own files (a failed test is not proof of a defect), groups findings
+by root cause, and writes a prioritised backlog (P0-P3) with owners from the existing agents. It **always stops for
+your approval** (`awaiting approval`): read `runs/<id>/remediation/backlog.md`, edit `backlog.json` if you want
+(reject a task by setting its `status` to `rejected` and giving its findings a disposition), then run `approve`.
+Steps 3-6 (fixes, integration pass, QA and smoke tests, re-evaluation with a before/after comparison) are not built yet.
+
+Everything is saved under `runs/<id>/remediation/`: `status.json`, `baseline/eval_report.json` (the first report, never
+overwritten), `findings.json`, `triage.json`, `backlog.json` / `backlog.md`, and an append-only `history.jsonl`. A re-run
+resumes where it stopped and makes no model call for work that is already saved.
+
+All code is in `remediation/` (plus `remediate.py`, `remediation_trigger.py`, `eval_report_html.py`). The two prompts are
+`remediation/prompts/tasks.yaml` and are merged in memory, so the pipeline's own `config/tasks.yaml` is untouched.
+Tests: `uv run pytest remediation/tests unit_tests` (no model calls, no CrewAI needed).
 
 ## Adding tests
 
