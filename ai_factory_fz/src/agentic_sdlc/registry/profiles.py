@@ -107,8 +107,8 @@ class Profile(BaseModel):
     def layout_summary(self) -> str:
         """The repository folders the build tooling creates and the coding agents work in."""
         lines = [f"- {c.workdir}/: the {name} ({c.agent})" for name, c in self.components.items() if c.workdir != "."]
-        copies = (self.guardrails.get("contract_copies") or {}).get("docs/openapi.yaml", [])
-        lines.append("- docs/openapi.yaml: the API contract" + (f" (copied to {', '.join(copies)})" if copies else ""))
+        copies = (self.guardrails.get("contract_copies") or {}).get("docs/api-contract.yaml", [])
+        lines.append("- docs/api-contract.yaml: the API contract" + (f" (copied to {', '.join(copies)})" if copies else ""))
         for name, c in self.components.items():
             for step in c.scaffold:
                 if step.template and step.copy_to:

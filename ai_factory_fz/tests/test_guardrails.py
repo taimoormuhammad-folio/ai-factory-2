@@ -1,8 +1,8 @@
-"""Architect guardrails: a compliant design passes all 15; each rule catches its own violation."""
+"""Architect guardrails: a compliant design passes all 16; each rule catches its own violation."""
 
 import pytest
 
-from agentic_sdlc.artifacts.architecture import ADR, AppFeature, ArchitectureDoc, BackendModule, Component
+from agentic_sdlc.artifacts.architecture import ADR, AppFeature, ArchitectureDoc, BackendModule, Component, DesignOption
 from agentic_sdlc.guardrails import architecture as g
 from agentic_sdlc.registry.profiles import Profile
 
@@ -60,6 +60,9 @@ LONG = "A sufficiently detailed explanation of this point."
 
 def good() -> ArchitectureDoc:
     return ArchitectureDoc(
+        options=[DesignOption(name="Modular monolith", summary="s", pros=["p"], cons=["c"], simplest=True),
+                 DesignOption(name="Services", summary="s", pros=["p"], cons=["c"])],
+        recommended_option="Modular monolith",
         overview="A Flutter mobile app talking to a NestJS API.",
         components=[Component(name="App", responsibility="r", technology="Flutter 3, Riverpod"),
                     Component(name="API", responsibility="r", technology="NestJS, Prisma"),

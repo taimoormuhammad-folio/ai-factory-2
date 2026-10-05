@@ -1,131 +1,104 @@
 # Task prompts per phase. {placeholders} are filled by the flow before the task runs.
 # Each task's structured output model is set in code (src/agentic_sdlc/crews/).
 
-customer_brief:
-  agent: customer
-  description: |
-    Here is the initial product brief:
-
-    ---
-    {brief}
-    ---
-
-    Expand it into a structured product brief from your point of view as the
-    business owner. Fill gaps with realistic business decisions and list the
-    questions you have not decided yet.
-  expected_output: A structured product brief.
-
-spec_questions:
-  agent: business_analyst
-  description: |
-    You are preparing to write the PRD for this product.
-
-    Product brief:
-    {product_brief}
-
-    Questions already asked and answered:
-    {qa_history}
-
-    This is clarification round {round} of at most {max_rounds}.
-    List only the questions whose answers would change the requirements
-    (scope, user flows, business rules, payments, delivery, returns, roles).
-    Do not repeat answered questions. If you have enough to write a complete
-    PRD, return an empty question list and set ready to true.
-  expected_output: A list of open questions (can be empty) and whether you are ready.
-
-customer_answers:
-  agent: customer
-  description: |
-    Your product brief:
-    {product_brief}
-
-    The business analyst asks:
-    {questions}
-
-    Answer every question directly, as the business owner. Keep answers
-    consistent with the brief and with a realistic first release.
-  expected_output: One answer per question.
-
 write_prd:
   agent: business_analyst
   description: |
-    Write the product requirements document.
+    Write the specification (spec.md) from the Product Owner's intent. You never invent business
+    rules or choose technology: anything the intent does not settle goes into open_questions for the
+    Product Owner, who answers them at the spec gate.
 
-    Product brief:
-    {product_brief}
-
-    Clarifications (questions and customer answers):
-    {qa_history}
+    Intent from the Product Owner:
+    {intent}
 
     Target stack (for context only; do not design the architecture):
     {stack}
 
-    Reviewer feedback on the previous draft (address all of it, empty if first draft):
+    Product Owner feedback on the previous draft, including answers to open questions (address all of
+    it; empty if first draft):
     {revision_notes}
 
     Scope for this run:
     {scope_rules}
 
     Rules:
-    - Story ids are US-001, US-002, ... Every story has at least two
-      acceptance criteria in Given/When/Then form.
-    - Mark priority as must, should or could. Keep the first release focused:
-      must-haves only cover what is needed to sell and fulfil an order.
-    - Include non-functional requirements (performance, security, privacy,
-      accessibility, supported platforms) and an explicit out-of-scope list.
-  expected_output: A complete PRD.
+    - Story ids are US-001, US-002, ... Every story has at least two testable acceptance criteria in
+      Given/When/Then form. Every criterion has a stable id unique across the spec: AC-01, AC-02, ...
+      (tests and acceptance evidence refer to these ids, so do not renumber them in revisions).
+    - Mark priority as must, should or could. Keep the first release focused.
+    - List edge cases, non-functional requirements (performance, security, privacy, accessibility,
+      platforms), an explicit out-of-scope list, assumptions and open questions.
+  expected_output: A complete spec with stories, acceptance criteria ids, edge cases and open questions.
 
-plan_backlog:
-  agent: project_manager
+design_wbs:
+  agent: architect
   description: |
-    Create the work breakdown structure and estimates for the solution the Architect and the
-    UI/UX designer designed. Plan the SOLUTION, not just the requirements.
+    Break your design into the work breakdown structure (WBS): work packages (WP-01...)
+    of small tasks (WI-001...). Builders work task by task and may write only the paths a task owns.
 
-    Approved PRD:
+    Spec:
     {prd}
 
-    The solution to build (from the architecture):
+    The solution (your design):
     {solution}
-
-    App screens (from the design):
-    {screens}
 
     Target stack: {stack}
 
-    Repository layout (fixed by the build tooling; work items use exactly these folders):
+    Repository layout (fixed by the build tooling):
     {layout}
 
-    Scope for this run:
-    {scope_rules}
+    Component folders (a task owns paths only inside its component's folder):
+    {workdirs}
 
     Reviewer feedback on the previous version (address all of it, empty if first draft):
     {revision_notes}
 
     Rules:
-    - Hierarchy: epics (E-01...) -> features (a short name per work item, e.g. "Cart API") -> work
-      items (WI-001...). Milestones M1, M2... in delivery order, each ending in a testable slice.
-    - Link every work item to what it builds: backend module names, the exact operationIds it
-      implements (backend) or calls (app), Prisma model names (if there is a database), screen ids (SCR-..).
-    - Coverage: every API operation must be implemented by the backend item(s) that own it; every
-      data model and every screen must be covered by some item. Only use names that exist above.
-    - Dependencies follow the design: an app item that calls an operation depends on the backend
-      item that implements it; the project setup comes first. No cycles.
-    - Infrastructure (Dockerfile, compose, CI) is an infra work item built with the rest; the
-      release phase only verifies it.
-    - Estimate each item in points (1-8; split anything larger) with complexity, risk and confidence
-      (low/medium/high) and a one-line rationale naming what drives the size (e.g. "atomic upsert +
-      99-cap rule + 4 endpoints"). Be honest about risk: new infrastructure, payments, auth and
-      concurrency are higher risk.
-    - Every must-have story is covered by at least one work item.
-  expected_output: A work breakdown structure with linked, estimated work items and ordered milestones.
+    - Each task: component, the files or folders it owns (globs like server/src/cart/**), a verify
+      command that proves it works (e.g. npm test -- cart, flutter test test/cart), the stories and
+      the acceptance criteria (AC-..) it makes pass, and its dependencies.
+    - Ownership: frontend, backend and infra tasks never own the same paths (they are built in
+      parallel); keep tasks small (about a day of work).
+    - Coverage: every must-have acceptance criterion has a task; every API operation is implemented by
+      a backend task; every data model is covered. App tasks that call an operation depend on the
+      backend task that implements it. Project setup and infrastructure (Dockerfile, compose, CI) are
+      tasks too. No cycles.
+  expected_output: Work packages and tasks with owned paths, verify commands, criteria and dependencies.
+
+plan_delivery:
+  agent: project_manager
+  description: |
+    Sequence the Architect's WBS into a delivery plan and estimate every task. You may not add, drop
+    or change tasks; if the WBS looks wrong, say so in risks (scope changes go back to the Architect).
+
+    Spec:
+    {prd}
+
+    WBS (from the Architect):
+    {wbs}
+
+    Scope for this run:
+    {scope_rules}
+
+    Reviewer feedback on the previous plan (address all of it, empty if first draft):
+    {revision_notes}
+
+    Rules:
+    - Milestones M1, M2... in delivery order, each ending in a testable slice; every task in exactly
+      one milestone; a task never waits for a task in a later milestone.
+    - Estimate every task in points (1-8) with complexity, risk and confidence (low/medium/high) and a
+      one-line rationale naming what drives the size. Be honest about risk: new infrastructure,
+      payments, auth and concurrency are higher risk.
+    - List delivery risks and a short schedule note.
+  expected_output: Milestones over the WBS tasks, an estimate per task, risks and a schedule note.
 
 design_architecture:
   agent: architect
   description: |
-    Design the system for this approved PRD. (The Project manager plans the work from your design
-    afterwards, so make modules, operations and data models explicit.)
+    Design the system for this approved spec. (You break it into the WBS next, so make modules,
+    operations and data models explicit.)
 
-    PRD:
+    Spec:
     {prd}
 
     Target stack: {stack}
@@ -142,6 +115,8 @@ design_architecture:
     {scope_rules}
 
     Deliver:
+    0. At least two design options (including the simplest that meets the spec, marked simplest) with
+       pros and cons, and the recommended one (recommended_option); the rest of the design is that option.
     1. Components and their responsibilities.
     2. Backend modules: each with its entities and the endpoints it owns.
     3. Mobile app features: screens and state management per feature.
@@ -239,9 +214,10 @@ implement_work_item:
     {tooling}
 
     Source of truth, in {docs_dir} (read what you need, do not edit):
-    - openapi.yaml: the API contract. Endpoints, request/response shapes and status codes must match it exactly.
-    - architecture.md: modules, data model notes, security design and ADRs.
-    - prd.md: full requirements. design_system.md: screens and design tokens (mobile work).
+    - api-contract.yaml: the API contract. Endpoints, request/response shapes and status codes must match it exactly.
+    - design.md: modules, data model notes, security design; adr-*.md: the decisions.
+    - spec.md: requirements and acceptance criteria (AC-..). wbs.md: your task's owned paths and verify command.
+    - ui-design.md and ui/: screens, design tokens and the approved screen prototypes (mobile work).
     - The project conventions in your instructions.
 
     Rules:
@@ -295,12 +271,12 @@ qa_milestone:
     How to work:
     {tooling}
 
-    Documents in {docs_dir}: openapi.yaml (API contract), architecture.md, prd.md, design_system.md.
+    Documents in {docs_dir}: api-contract.yaml (API contract), design.md, spec.md, ui-design.md, wbs.md, plan.md.
 
     Do this:
     1. For each acceptance criterion above that the built items cover, find the code and the tests
        that prove it. Add missing tests where you can, and run the test suites if you can.
-    2. Check that implemented endpoints match openapi.yaml (paths, methods, status codes, shapes).
+    2. Check that implemented endpoints match api-contract.yaml (paths, methods, status codes, shapes).
     3. Look for security problems: auth checks, input validation, secrets in code.
     Report each real defect as a bug with the work item it belongs to. Severity: blocker (breaks
     the milestone goal or security), major (an acceptance criterion is not met), minor (other).
@@ -362,7 +338,7 @@ write_smoke_tests:
     - Use plain HTTP requests against SMOKE_BASE_URL; do not import application code.
     - Cover only journeys the built items support, end to end (e.g. health, sign up, sign in,
       browse, add to cart), with unique test data per run (e.g. a timestamped email).
-    - The API contract is {docs_dir}/openapi.yaml; request/response shapes must follow it.
+    - The API contract is {docs_dir}/api-contract.yaml; request/response shapes must follow it.
     - Keep it short and reliable: a handful of journeys, clear failure messages.
   expected_output: A report of the smoke suite you wrote.
 
@@ -374,7 +350,7 @@ integration_review:
     Built so far:
     {built}
 
-    Contract check (API served vs {docs_dir}/openapi.yaml, built scope only):
+    Contract check (API served vs {docs_dir}/api-contract.yaml, built scope only):
     {contract_issues}
 
     Recent staging logs:
@@ -420,39 +396,4 @@ write_device_tests:
       frontend developer.
   expected_output: A report of the on-device tests you wrote.
 
-# ---------- estimation review (bottom-up) ----------
 
-review_estimates:
-  agent: backend_developer   # run as each component's developer (see profile components)
-  description: |
-    You will build the work items below. The Project manager drafted them with estimates; give
-    your own estimate for each, as the person who will do the work.
-
-    Your work items:
-    {items}
-
-    The solution they are part of:
-    {solution}
-
-    Stack: {stack}
-
-    For every item: points (1-8, same scale as the PM: 1 = trivial, 3 = a solid half-day of
-    focused work including tests, 8 = the largest item worth keeping together), complexity, risk
-    and confidence (low/medium/high), and a one-line rationale naming what drives the effort.
-    Include writing tests and getting the build green. Use `concerns` for anything the plan misses
-    or underestimates (hidden work, missing dependency, unclear requirement). Estimate honestly:
-    do not simply copy the PM's number, and do not pad.
-  expected_output: One estimate per work item.
-
-reconcile_estimates:
-  agent: project_manager
-  description: |
-    The developers re-estimated your work breakdown. For these items the two estimates are far
-    apart:
-
-    {disagreements}
-
-    Decide the final estimate for each, between the two numbers, and say why in one line. Weigh
-    the builder's concrete reasons (hidden work, concerns) against your view of scope. Where the
-    builder names work the plan misses, lean towards their number.
-  expected_output: One decision per disputed item.

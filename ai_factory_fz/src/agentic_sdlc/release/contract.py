@@ -1,4 +1,4 @@
-"""Compare the running API's OpenAPI document with the approved contract (docs/openapi.yaml)."""
+"""Compare the running API's OpenAPI document with the approved contract (docs/api-contract.yaml)."""
 
 import json
 import re

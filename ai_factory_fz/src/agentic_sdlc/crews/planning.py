@@ -1,14 +1,13 @@
-"""Planning phase: the Architect designs the solution; the Project manager breaks it down.
-
-Order: Architect (from the PRD) -> UI/UX designer (design phase) -> Project manager, so the work
-breakdown and estimates are built on the actual solution: every API operation, data model and
-screen must be covered by a work item, and app items depend on the backend items they call.
-"""
+"""Design and Plan: the Architect designs the solution (options, contract, ADRs) and breaks it into the
+WBS (tasks with owned paths, verify commands and acceptance criteria); the Project manager then
+sequences and estimates the WBS into the delivery plan without changing it."""
 
 from typing import Callable
 
 from agentic_sdlc.artifacts.architecture import ArchitectureDoc
 from agentic_sdlc.artifacts.backlog import Backlog
+from agentic_sdlc.artifacts.plan import DeliveryPlan, to_backlog
+from agentic_sdlc.artifacts.wbs import Wbs
 from agentic_sdlc.artifacts.design import DesignSystem
 from agentic_sdlc.artifacts.prd import PRD
 from agentic_sdlc.crews.base import TaskResult, TaskRunner, artifact_guardrail
@@ -65,38 +64,53 @@ def screens_summary(design: DesignSystem | None) -> str:
     return "\n".join(f"- {s.id} {s.name} ({s.route}): stories {', '.join(s.story_ids)}" for s in design.screens)
 
 
-def plan_work(
-    runner: TaskRunner,
-    prd: PRD,
-    architecture: ArchitectureDoc,
-    design: DesignSystem | None,
-    stack: str,
-    revision_notes: str = "",
-    scope: Scope | None = None,
-    layout: str = "",
-) -> TaskResult[Backlog]:
-    scope = scope or Scope()
-    must_haves = prd.must_have_ids()
-    operations = architecture.operations()
-    models = architecture.data_models()
-    screen_ids = [s.id for s in design.screens] if design else []
+def wbs_errors(wbs: Wbs, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str]) -> list[str]:
+    known_acs = {c.id for _, c in prd.criteria()}
+    return (wbs.structure_errors() + wbs.w1_ownership(workdirs) + wbs.w2_verify()
+            + wbs.w3_coverage(prd.must_have_ac_ids(), known_acs, architecture.operations(), architecture.data_models()))
 
-    def check(b: Backlog) -> list[str]:
-        return (b.validation_errors(must_haves) + b.coverage_errors(operations, models, screen_ids)
-                + scope.backlog_errors(b))
 
+def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str],
+               stack: str, revision_notes: str = "", layout: str = "") -> TaskResult[Wbs]:
+    """The Architect's work breakdown: packages -> small tasks, each owning paths with a verify command."""
     return runner.run(
         PHASE,
-        "plan_backlog",
+        "design_wbs",
         {
             "prd": prd.to_markdown(),
             "solution": architecture.solution_summary(),
-            "screens": screens_summary(design),
             "stack": stack,
             "layout": layout or NO_LAYOUT,
+            "workdirs": "\n".join(f"- {c}: {w}/" for c, w in workdirs.items()),
+            "revision_notes": revision_notes or "(none)",
+        },
+        Wbs,
+        guardrail=artifact_guardrail(Wbs, lambda w: wbs_errors(w, prd, architecture, workdirs)),
+    )
+
+
+def plan_delivery(runner: TaskRunner, prd: PRD, wbs: Wbs, revision_notes: str = "",
+                  scope: Scope | None = None) -> TaskResult[DeliveryPlan]:
+    """The Project manager sequences the WBS into milestones and estimates every task."""
+    scope = scope or Scope()
+    must_haves = prd.must_have_ids()
+
+    def check(plan: DeliveryPlan) -> list[str]:
+        errors = plan.errors(wbs)
+        if not errors:
+            backlog = to_backlog(wbs, plan)
+            errors = backlog.validation_errors(must_haves) + scope.backlog_errors(backlog)
+        return errors
+
+    return runner.run(
+        PHASE,
+        "plan_delivery",
+        {
+            "prd": prd.to_markdown(),
+            "wbs": wbs.to_markdown(),
             "revision_notes": revision_notes or "(none)",
             "scope_rules": scope.rules_text(),
         },
-        Backlog,
-        guardrail=artifact_guardrail(Backlog, check),
+        DeliveryPlan,
+        guardrail=artifact_guardrail(DeliveryPlan, check),
     )

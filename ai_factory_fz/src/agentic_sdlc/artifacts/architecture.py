@@ -7,6 +7,10 @@ from openapi_spec_validator import validate
 from pydantic import BaseModel, Field
 
 
+# The approved API contract (copied into the components by the scaffold, checked against the running API).
+CONTRACT_PATH = "docs/api-contract.yaml"
+
+
 class Component(BaseModel):
     name: str
     responsibility: str
@@ -34,7 +38,18 @@ class ADR(BaseModel):
     consequences: str
 
 
+class DesignOption(BaseModel):
+    name: str
+    summary: str
+    pros: list[str]
+    cons: list[str]
+    simplest: bool = Field(default=False, description="True for the simplest option that meets the spec")
+
+
 class ArchitectureDoc(BaseModel):
+    options: list[DesignOption] = Field(default_factory=list,
+                                        description="At least two design options, including the simplest")
+    recommended_option: str = Field(default="", description="Name of the recommended option, and the design below")
     overview: str
     components: list[Component]
     backend_modules: list[BackendModule]
@@ -115,7 +130,16 @@ class ArchitectureDoc(BaseModel):
         )
 
     def to_markdown(self) -> str:
-        lines = ["# Architecture", "", self.overview, "", "## Components"]
+        lines = ["# Design", ""]
+        if self.options:
+            lines += ["## Options considered", ""]
+            for o in self.options:
+                tag = " (simplest)" if o.simplest else ""
+                mark = " **recommended**" if o.name == self.recommended_option else ""
+                lines += [f"### {o.name}{tag}{mark}", o.summary, "", "Pros:"] + [f"- {p}" for p in o.pros] \
+                    + ["", "Cons:"] + [f"- {c}" for c in o.cons] + [""]
+            lines += [f"Recommendation: **{self.recommended_option}**", ""]
+        lines += ["## Architecture", "", self.overview, "", "## Components"]
         lines += [f"- **{c.name}** ({c.technology}): {c.responsibility}" for c in self.components]
         lines += ["", "## Backend modules"]
         for m in self.backend_modules:

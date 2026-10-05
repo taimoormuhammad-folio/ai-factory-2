@@ -3,9 +3,9 @@ the design tokens; this module turns that into a phone-sized HTML page per state
 files rendered with headless Chrome (when it is installed; the HTML pages work without it).
 
 Files (in the run folder):
-  docs/mockups/<SCR-xx>_<state>.html   one page per screen state, 390x844 by default
-  docs/mockups/<SCR-xx>_<state>.png    the same page as an image
-  docs/mockups/index.html              all screens and states side by side (shown at Gate 2)
+  docs/ui/<SCR-xx>_<state>.html   one page per screen state, 390x844 by default
+  docs/ui/<SCR-xx>_<state>.png    the same page as an image
+  docs/ui/index.html              all screens and states side by side (shown at the UI gate, G4)
 """
 
 import html
@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from agentic_sdlc.artifacts.design import DesignSystem, ScreenMockups, ScreenSpec, token_name
 
+MOCKUP_DIR = "docs/ui"
 DEFAULT_VIEWPORT = (390, 844)
 DEFAULT_STATES = ["success", "loading", "error", "empty"]
 CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
@@ -185,7 +186,7 @@ img, .frame {{ display: block; border-radius: 16px; border: 1px solid #ccc; back
 .frame {{ width: {int(w * scale)}px; height: {int(h * scale)}px; }} .frame iframe {{ border: 0; }}
 </style></head><body>
 <h1>Screen mockups</h1>
-<p>Drawn by the UI/UX designer from docs/design_system.md, with the design tokens. Click a screen to open it full size.</p>
+<p>Drawn by the UI/UX designer from docs/ui-design.md, with the design tokens. Click a screen to open it full size.</p>
 {''.join(rows)}
 </body></html>
 """
@@ -227,11 +228,11 @@ def write_mockups(workspace, design: DesignSystem, all_mockups: list[ScreenMocku
         states = []
         for m in sm.mockups:
             base = f"{screen.id}_{slug(m.state.split(' (')[0])}"   # drop the spec's description in brackets
-            html_path = workspace.write_text(f"docs/mockups/{base}.html", page_html(design, screen, m.state, m.html, viewport))
+            html_path = workspace.write_text(f"{MOCKUP_DIR}/{base}.html", page_html(design, screen, m.state, m.html, viewport))
             pages += 1
             ok = render(html_path, html_path.with_suffix(".png"), viewport)
             pngs += ok
             states.append({"state": m.state, "html_file": f"{base}.html", "png_file": f"{base}.png" if ok else None})
         entries.append({"screen": screen, "states": states})
-    workspace.write_text("docs/mockups/index.html", gallery_html(design, entries, viewport))
+    workspace.write_text(f"{MOCKUP_DIR}/index.html", gallery_html(design, entries, viewport))
     return {"pages": pages, "pngs": pngs}

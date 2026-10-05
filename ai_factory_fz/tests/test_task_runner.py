@@ -42,7 +42,7 @@ def final(payload: dict) -> str:
 
 class FakeModels(ModelRegistry):
     def __init__(self, scripts: dict[str, list[Any]]):
-        super().__init__({"agents": {"customer": {"model": "fake/a", "fallbacks": ["fake/b"]}}})
+        super().__init__({"agents": {"business_analyst": {"model": "fake/a", "fallbacks": ["fake/b"]}}})
         self.llms = {m: ScriptedLLM(model=m, replies=list(r), prompts=[]) for m, r in scripts.items()}
 
     def build_llm(self, agent_key, model=None):
@@ -50,7 +50,7 @@ class FakeModels(ModelRegistry):
 
 
 TASKS = {
-    "t": {"agent": "customer", "description": "Context: {ctx}. List items.", "expected_output": "Items."}
+    "t": {"agent": "business_analyst", "description": "Context: {ctx}. List items.", "expected_output": "Items."}
 }
 
 
@@ -64,7 +64,7 @@ def test_structured_output_and_usage():
     runner, models = make_runner({"fake/a": [final({"items": ["a", "b"]})]})
     result = runner.run("p", "t", {"ctx": '{"json": "with braces"}'}, Answer)
     assert result.artifact == Answer(items=["a", "b"])
-    assert result.usage.model == "fake/a" and result.usage.agent == "customer"
+    assert result.usage.model == "fake/a" and result.usage.agent == "business_analyst"
     assert "with braces" in models.llms["fake/a"].prompts[0]
 
 

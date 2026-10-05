@@ -22,6 +22,7 @@ preflight = "agentic_sdlc.main:preflight_cmd"
 showcase = "agentic_sdlc.main:showcase"
 mockups = "agentic_sdlc.main:mockups"
 approve = "agentic_sdlc.main:approve"
+intake = "agentic_sdlc.main:intake_cmd"
 plot = "agentic_sdlc.main:plot"
 run_with_trigger = "agentic_sdlc.main:run_with_trigger"
 

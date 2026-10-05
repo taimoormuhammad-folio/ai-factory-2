@@ -68,6 +68,17 @@ def resume() -> None:
     resume_run(args.run_id)
 
 
+def intake_cmd(argv: list[str] | None = None, input_fn=input) -> None:
+    """Step 0 for the Product Owner: describe the request and its risk tier; writes briefs/<title>.md."""
+    from agentic_sdlc import intake
+
+    parser = argparse.ArgumentParser(description="Write a request (intent) for a new run")
+    parser.add_argument("--briefs-dir", type=Path, default=PROJECT_ROOT / "briefs")
+    args = parser.parse_args(argv)
+    path = intake.write_brief(args.briefs_dir, intake.interview(input_fn))
+    print(f"Wrote {path}\nStart the run with:  uv run kickoff --brief {path} --profile <profile> --pipeline <pipeline>")
+
+
 def approve(argv: list[str] | None = None, input_fn=input, is_tty=None) -> None:
     """Record a person's decision on a gate the run is waiting for (async gates). Interactive only."""
     from agentic_sdlc.gates import files as gate_files
@@ -106,7 +117,7 @@ def approve(argv: list[str] | None = None, input_fn=input, is_tty=None) -> None:
 
 
 def mockups() -> None:
-    """Draw the UI/UX designer's screen mockups for an existing run (docs/mockups/), without re-running it."""
+    """Draw the UI/UX designer's screen mockups for an existing run (docs/ui/), without re-running it."""
     from agentic_sdlc.flow import default_deps
     from agentic_sdlc.state import ProjectState
 
@@ -121,7 +132,7 @@ def mockups() -> None:
         if name != "id":
             setattr(flow.state, name, getattr(restored, name))
     if flow.state.design is None:
-        raise SystemExit("This run has no design system yet (docs/design_system.json): nothing to draw.")
+        raise SystemExit("This run has no UI design yet (docs/ui-design.json): nothing to draw.")
     flow._deps = default_deps(flow.state)
     flow._deps.pipeline["design"] = {**(flow._deps.pipeline.get("design") or {}), "mockups": True}
     flow._deps.pipeline.setdefault("phases", {})["design"] = True
@@ -134,7 +145,7 @@ def mockups() -> None:
     finally:
         flow.state.status, flow.state.stop_reason = status, reason
         ws.save_state(flow.state)
-    print(f"Mockups: {ws.root / 'docs/mockups/index.html'}")
+    print(f"Mockups: {ws.root / 'docs/ui/index.html'}")
 
 
 def _apply_milestones(milestones: str | None) -> None:

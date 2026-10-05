@@ -3,8 +3,8 @@ from agentic_sdlc.crews.base import fill_template
 from agentic_sdlc.crews.discovery import prd_errors
 
 
-def test_markdown_renders_for_every_artifact(product_brief, prd, backlog, architecture, design_system):
-    for artifact in (product_brief, prd, backlog, architecture, design_system):
+def test_markdown_renders_for_every_artifact(prd, backlog, architecture, design_system):
+    for artifact in (prd, backlog, architecture, design_system):
         assert artifact.to_markdown().startswith("# ")
 
 
@@ -44,6 +44,13 @@ def test_prd_checks(prd):
     errors = prd_errors(prd)
     assert "unique" in errors[0]
     assert any("two acceptance criteria" in e for e in errors)
+
+
+def test_spec_needs_unique_acceptance_criterion_ids(prd):
+    prd.user_stories[1].acceptance_criteria[0].id = "AC-01"      # duplicate of US-001's
+    prd.user_stories[1].acceptance_criteria[1].id = ""
+    errors = " ".join(prd_errors(prd))
+    assert "unique across the spec: AC-01" in errors and "needs an id AC-01" in errors
 
 
 def test_design_coverage(design_system):

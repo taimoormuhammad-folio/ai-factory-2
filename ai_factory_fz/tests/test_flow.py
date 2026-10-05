@@ -12,7 +12,8 @@ from agentic_sdlc.workspace import Workspace
 
 PIPELINE = {
     "phases": {"discovery": True, "planning": True, "design": True, "build": False, "release": False},
-    "gates": {"prd": True, "architecture": True, "release": True},
+    # G3/G4 are off here so these tests answer two gates; test_front_half_gates covers them.
+    "gates": {"prd": True, "architecture": True, "estimate": False, "ui": False, "release": True},
     "gate_mode": "console",
     "limits": {"clarification_rounds": 2, "gate_rejections": 2},
     "budget": {"max_total_tokens": 1_000_000},
@@ -70,17 +71,17 @@ def test_happy_path_runs_all_built_phases(tmp_path, canned):
 
     s = flow.state
     assert s.status == "completed", s.stop_reason
-    assert runner.keys() == [
-        "customer_brief", "spec_questions", "customer_answers", "spec_questions",
-        "customer_answers", "write_prd", "design_architecture", "design_ui", "plan_backlog",
-        "review_estimates", "review_estimates",
-    ]
-    assert [(g.gate, g.approved) for g in s.gate_history] == [("prd", True), ("architecture", True)]
+    assert runner.keys() == ["write_prd", "design_architecture", "design_wbs", "plan_delivery", "design_ui"]
+    assert [(g.gate, g.approved) for g in s.gate_history] == [
+        ("prd", True), ("architecture", True), ("estimate", True), ("ui", True)]
     root = tmp_path / "r1"
-    for f in ("prd.md", "backlog.md", "architecture.md", "openapi.yaml", "schema.prisma", "design_system.md"):
+    for f in ("intent.md", "spec.md", "design.md", "api-contract.yaml", "schema.prisma", "adr-001.md", "wbs.md",
+              "plan.md", "estimates.md", "ownership/backend.txt", "ownership/frontend.txt", "ui-design.md"):
         assert (root / "docs" / f).exists(), f
+    assert (root / "docs" / "ownership" / "backend.txt").read_text() == "server/src/catalog/**\n"
+    assert [w.owns for w in s.backlog.work_items] == [["server/src/catalog/**"], ["app/lib/catalog/**"]]
     assert json.loads((root / "state.json").read_text())["status"] == "completed"
-    assert "Total tokens: 110" in (root / "reports" / "run_summary.md").read_text()  # 11 agent calls
+    assert "Total tokens: 50" in (root / "reports" / "run_summary.md").read_text()  # 5 agent calls
 
 
 def test_rejected_prd_is_rewritten_with_feedback(tmp_path, canned):
@@ -95,25 +96,28 @@ def test_rejected_prd_is_rewritten_with_feedback(tmp_path, canned):
     assert prd_calls[1]["revision_notes"] == "Add guest checkout"
 
 
-def test_rejected_solution_rewrites_architecture_design_and_plan_with_feedback(tmp_path, canned):
+def test_rejected_design_rewrites_design_and_wbs_with_feedback(tmp_path, canned):
     runner = FakeRunner(canned)
     flow = make_flow(tmp_path, runner, ["y", "", "n", "Use Redis for carts", "y", ""])
     flow.kickoff(inputs={"run_id": "r3", "brief": "shop"})
 
     assert flow.state.status == "completed", flow.state.stop_reason
-    for key in ("design_architecture", "design_ui", "plan_backlog"):
+    for key in ("design_architecture", "design_wbs"):
         assert runner.keys().count(key) == 2, key
         assert [i for k, i in runner.calls if k == key][1]["revision_notes"] == "Use Redis for carts", key
+    assert runner.keys().count("plan_delivery") == 1 and runner.keys().count("design_ui") == 1  # after G2 only
 
 
-def test_pm_plans_from_the_architecture_and_screens(tmp_path, canned):
+def test_architect_breaks_down_the_design_and_pm_plans_the_wbs(tmp_path, canned):
     runner = FakeRunner(canned)
     flow = make_flow(tmp_path, runner, ["y", "", "y", ""])
     flow.kickoff(inputs={"run_id": "r9", "brief": "shop"})
-    inputs = next(i for k, i in runner.calls if k == "plan_backlog")
-    assert "listProducts: GET /api/v1/products" in inputs["solution"]
-    assert "Data models: Product" in inputs["solution"]
-    assert "SCR-01 Products (/products)" in inputs["screens"]
+    wbs_inputs = next(i for k, i in runner.calls if k == "design_wbs")
+    assert "listProducts: GET /api/v1/products" in wbs_inputs["solution"]
+    assert "Data models: Product" in wbs_inputs["solution"]
+    assert "- backend: server/" in wbs_inputs["workdirs"]
+    plan_inputs = next(i for k, i in runner.calls if k == "plan_delivery")
+    assert "WI-001 Products API" in plan_inputs["wbs"] and "`npm test`" in plan_inputs["wbs"]
 
 
 def test_too_many_rejections_stop_the_run(tmp_path, canned):
@@ -123,25 +127,17 @@ def test_too_many_rejections_stop_the_run(tmp_path, canned):
 
     assert flow.state.status == "stopped"
     assert "rejected 2 times" in flow.state.stop_reason
-    assert "plan_backlog" not in runner.keys()
+    assert "design_wbs" not in runner.keys()
 
 
 def test_disabled_gates_auto_approve(tmp_path, canned):
-    pipeline = {**PIPELINE, "gates": {"prd": False, "architecture": False}}
+    pipeline = {**PIPELINE, "gates": {"prd": False, "architecture": False, "estimate": False, "ui": False}}
     flow = make_flow(tmp_path, FakeRunner(canned), [], pipeline=pipeline)
     flow.kickoff(inputs={"run_id": "r5", "brief": "shop"})
     assert flow.state.status == "completed"
     assert {g.decided_by for g in flow.state.gate_history} == {"config"}
 
 
-def test_budget_stops_before_next_phase(tmp_path, canned):
-    pipeline = {**PIPELINE, "budget": {"max_total_tokens": 25}}
-    runner = FakeRunner(canned)
-    flow = make_flow(tmp_path, runner, [], pipeline=pipeline)
-    flow.kickoff(inputs={"run_id": "r6", "brief": "shop"})
-    assert flow.state.status == "stopped"
-    assert "budget" in flow.state.stop_reason
-    assert "write_prd" not in runner.keys()
 
 
 def test_release_without_a_build_stops_clearly(tmp_path, canned):
@@ -227,7 +223,8 @@ def test_full_flow_through_release_gate_to_production(tmp_path, canned):
     flow.kickoff(inputs={"run_id": "rr", "brief": "shop"})
     s = flow.state
     assert s.status == "completed", s.stop_reason
-    assert [(g.gate, g.approved) for g in s.gate_history] == [("prd", True), ("architecture", True), ("release", True)]
+    assert [(g.gate, g.approved) for g in s.gate_history] == [
+        ("prd", True), ("architecture", True), ("estimate", True), ("ui", True), ("release", True)]
     assert s.release.verified and s.release.production == "packaged"
     assert "## Release" in (tmp_path / "rr" / "reports" / "run_summary.md").read_text()
 
@@ -252,7 +249,7 @@ def test_scope_rules_reach_the_planning_prompts(tmp_path, canned):
     flow = make_flow(tmp_path, runner, ["y", "", "y", ""], pipeline=pipeline)
     flow.kickoff(inputs={"run_id": "rs", "brief": "shop", "pipeline": "pipeline.demo"})
     assert flow.state.pipeline == "pipeline.demo"
-    for key in ("write_prd", "plan_backlog", "design_architecture", "design_ui"):
+    for key in ("write_prd", "plan_delivery", "design_architecture", "design_ui"):
         inputs = next(i for k, i in runner.calls if k == key)
         assert "Demo only." in inputs["scope_rules"] and "at most 5 work items" in inputs["scope_rules"], key
 
@@ -272,10 +269,34 @@ def test_preflight_problems_stop_the_run_before_any_agent(tmp_path, canned):
     assert runner.calls == []
 
 
-def test_estimation_review_can_be_switched_off(tmp_path, canned):
+
+
+def test_front_half_gates_g1_to_g4_in_order_and_revisions(tmp_path, canned):
+    """Spec → G1 → design + WBS → G2 → plan → G3 (rejected once) → UI → G4 (rejected once)."""
     runner = FakeRunner(canned)
-    pipeline = {**PIPELINE, "planning": {"estimation_review": False}}
-    flow = make_flow(tmp_path, runner, ["y", "", "y", ""], pipeline=pipeline)
-    flow.kickoff(inputs={"run_id": "re", "brief": "shop"})
-    assert flow.state.status == "completed" and "review_estimates" not in runner.keys()
-    assert not flow.state.backlog.estimation_reviewed
+    pipeline = {**PIPELINE, "gates": {**PIPELINE["gates"], "estimate": True, "ui": True}}
+    answers = ["y", "", "y", "", "n", "Split M1 into two milestones", "y", "", "n", "Larger touch targets", "y", ""]
+    flow = make_flow(tmp_path, runner, answers, pipeline=pipeline)
+    flow.kickoff(inputs={"run_id": "fh", "brief": "shop"})
+    s = flow.state
+    assert s.status == "completed", s.stop_reason
+    assert [(g.gate, g.approved) for g in s.gate_history if g.decided_by == "human"] == [
+        ("prd", True), ("architecture", True), ("estimate", False), ("estimate", True), ("ui", False), ("ui", True)]
+    assert runner.keys() == ["write_prd", "design_architecture", "design_wbs", "plan_delivery", "plan_delivery",
+                             "design_ui", "design_ui"]
+    assert [i for k, i in runner.calls if k == "plan_delivery"][1]["revision_notes"] == "Split M1 into two milestones"
+    assert [i for k, i in runner.calls if k == "design_ui"][1]["revision_notes"] == "Larger touch targets"
+    gates = tmp_path / "fh" / "gates"
+    assert {p.name for p in gates.glob("G*.gate")} == {"G1.gate", "G2.gate", "G3.gate", "G4.gate"}
+
+
+def test_intent_front_matter_sets_the_product_owner_and_risk_tier(tmp_path, canned):
+    brief = "---\ntitle: Shop app\nproduct_owner: Pat Owner\nrisk_tier: h\n---\nSell clothes online.\n"
+    runner = FakeRunner(canned)
+    flow = make_flow(tmp_path, runner, ["y", "", "y", ""])
+    flow.kickoff(inputs={"run_id": "in", "brief": brief})
+    assert flow.state.risk_tier == "H" and flow.state.product_owner == "Pat Owner"
+    intent = (tmp_path / "in" / "docs" / "intent.md").read_text()
+    assert "risk_tier: H" in intent and "Sell clothes online." in intent and "product_owner: Pat Owner" in intent
+    spec_input = runner.calls[0][1]["intent"]
+    assert spec_input.startswith("Sell clothes online.") and "Risk tier: H" in spec_input and "title:" not in spec_input

@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from agentic_sdlc.artifacts.architecture import ArchitectureDoc
 from agentic_sdlc.artifacts.backlog import Backlog
 from agentic_sdlc.artifacts.design import DesignSystem, ScreenMockups
+from agentic_sdlc.artifacts.plan import DeliveryPlan
+from agentic_sdlc.artifacts.wbs import Wbs
 from agentic_sdlc.artifacts.prd import PRD, ProductBrief, QAPair
 from agentic_sdlc.artifacts.reports import QAReport, WorkItemResult
 
@@ -88,7 +90,7 @@ class ReleaseState(BaseModel):
     device_note: str = ""                         # why device checks were skipped, if they were
     device_screenshots: list[str] = Field(default_factory=list)
     verified: bool = False                        # staging, integration, smoke (and device) passed
-    failed: bool = False                          # fix rounds used up with problems left: Gate 3 decides
+    failed: bool = False                          # fix rounds used up with problems left: the release gate (G6) decides
     open_problems: list[list[str]] = Field(default_factory=list)  # [component, problem] from the last round
     production: Literal["todo", "packaged", "deployed", "failed"] = "todo"
     production_notes: str = ""
@@ -111,6 +113,9 @@ class ProjectState(FlowState):
     backlog: Backlog | None = None
     architecture: ArchitectureDoc | None = None
     risk_tier: str = ""                 # L | M | H (from the intake); empty = the pipeline's risk_tier
+    product_owner: str = ""             # from the intake
+    wbs: Wbs | None = None              # the Architect's work breakdown
+    plan: DeliveryPlan | None = None    # the Project manager's sequencing and estimates (merged into backlog)
     design: DesignSystem | None = None
     mockups: list[ScreenMockups] = Field(default_factory=list)   # per screen, when design.mockups is on
     build: BuildState = Field(default_factory=BuildState)

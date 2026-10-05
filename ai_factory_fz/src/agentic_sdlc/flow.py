@@ -17,7 +17,10 @@ from agentic_sdlc.build.coders import Worker, make_worker
 from agentic_sdlc.build.loop import BuildConfig, Builder
 from agentic_sdlc.build.sync import sync_build_with_backlog
 from agentic_sdlc import preflight
-from agentic_sdlc.crews import design, discovery, estimation, planning
+from agentic_sdlc import intake
+from agentic_sdlc.artifacts.architecture import CONTRACT_PATH
+from agentic_sdlc.artifacts.plan import to_backlog
+from agentic_sdlc.crews import design, discovery, planning
 from agentic_sdlc.design import mockups as mockup_kit
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import architecture as architecture_guardrails
@@ -162,15 +165,8 @@ class SDLCFlow(Flow[ProjectState]):
         self.state.stop_reason = reason
         log.warning("Run stopped: %s", reason)
 
-    def _over_budget(self) -> bool:
-        limit = self.deps.pipeline.get("budget", {}).get("max_total_tokens")
-        if limit and self.state.uncached_tokens() > limit:
-            self._stop(f"Token budget exceeded ({self.state.uncached_tokens()} uncached tokens > {limit})")
-            return True
-        return False
-
     def _can_continue(self) -> bool:
-        return self.state.status == "running" and not self._over_budget()
+        return self.state.status == "running"
 
     @property
     def _risk_tier(self) -> str:
@@ -258,52 +254,54 @@ class SDLCFlow(Flow[ProjectState]):
             if problems:
                 self._stop(preflight.report(problems) + f"\nThen run: uv run resume {self.state.run_id}")
 
+    def _intent(self) -> tuple[dict, str]:
+        return intake.parse(self.state.brief)
+
+    def _write_intent(self) -> None:
+        """Step 0: the Product Owner's request (brief + front matter) becomes docs/intent.md."""
+        meta, body = self._intent()
+        if not self.state.risk_tier and meta.get("risk_tier"):
+            self.state.risk_tier = str(meta["risk_tier"]).upper()
+        if not self.state.product_owner and meta.get("product_owner"):
+            self.state.product_owner = str(meta["product_owner"])
+        ws = self.deps.workspace
+        if not (ws.root / "docs/intent.md").exists():
+            ws.write_text("docs/intent.md", intake.intent_markdown(meta, body, self._risk_tier))
+
     @listen(init_run)
     def discovery_phase(self) -> None:
+        """Specify: the Business analyst writes the spec from the intent."""
+        if self.state.status == "running":
+            self._write_intent()
         if not self._can_continue() or not self._phase_enabled("discovery"):
             return
-        runner, ws = self.deps.runner, self.deps.workspace
-        if self.state.product_brief is None:
-            self.state.product_brief = self._record(discovery.expand_brief(runner, self.state.brief))
-            ws.save_artifact("product_brief", self.state.product_brief, agent="customer")
-            self._checkpoint("Discovery: product brief")
-        if not self.state.clarifications:
-            max_rounds = self.deps.pipeline.get("limits", {}).get("clarification_rounds", 3)
-            history, results = discovery.clarify(runner, self.state.product_brief, [], max_rounds,
-                                                 agent_guardrails.enabled(self.deps.pipeline))
-            for r in results:
-                self._record(r)
-            self.state.clarifications = history
-            ws.write_text("docs/clarifications.md", "# Clarifications\n\n" + discovery.format_qa(history) + "\n")
-            self._checkpoint("Discovery: clarifications")
         self._write_prd()
 
     def _write_prd(self) -> None:
         if self.state.prd is not None or not self._can_continue():
             return
-        self.state.prd = self._record(
-            discovery.write_prd(
-                self.deps.runner,
-                self.state.product_brief,
-                self.state.clarifications,
-                self.deps.profile.stack_summary(),
-                self.state.revision_notes("prd"),
-                self._scope,
-            )
-        )
-        self.deps.workspace.save_artifact("prd", self.state.prd, agent="business_analyst",
-                                          inputs=["docs/product_brief.md", "docs/clarifications.md"])
-        self._checkpoint("Discovery: PRD")
+        _, body = self._intent()
+        owner = f"\n\nProduct Owner: {self.state.product_owner}" if self.state.product_owner else ""
+        self.state.prd = self._record(discovery.write_spec(
+            self.deps.runner, f"{body.strip()}{owner}\nRisk tier: {self._risk_tier}",
+            self.deps.profile.stack_summary(), self.state.revision_notes("prd"), self._scope))
+        self.deps.workspace.save_artifact("spec", self.state.prd, agent="business_analyst", inputs=["docs/intent.md"])
+        self._checkpoint("Specify: spec")
 
     @router(or_(discovery_phase, "revise_prd"))
     def prd_gate(self) -> Literal["prd_approved", "prd_rejected", "stopped"]:
+        """G1 spec approval (customer, through the Product Owner)."""
         if self.state.prd is None:
             if self.state.status == "running":
-                self._stop("No PRD was produced (is the discovery phase disabled?)")
+                self._stop("No spec was produced (is the discovery phase disabled?)")
             return "stopped"
         prd = self.state.prd
-        summary = f"PRD '{prd.title}': {len(prd.user_stories)} user stories, {len(prd.must_have_ids())} must-have."
-        return self._gate("prd", summary, ["docs/prd.md", "docs/clarifications.md"], lambda: setattr(self.state, "prd", None))
+        summary = (f"Spec '{prd.title}': {len(prd.user_stories)} user stories ({len(prd.must_have_ids())} must-have), "
+                   f"{len(prd.criteria())} acceptance criteria.")
+        if prd.open_questions:
+            summary += ("\nOpen questions for the Product Owner (answer them as your feedback to get a revised spec):\n"
+                        + "\n".join(f"  - {q}" for q in prd.open_questions))
+        return self._gate("prd", summary, ["docs/spec.md", "docs/intent.md"], lambda: setattr(self.state, "prd", None))
 
     @listen("prd_rejected")
     def revise_prd(self) -> None:
@@ -311,13 +309,14 @@ class SDLCFlow(Flow[ProjectState]):
 
     @listen("prd_approved")
     def solution_phase(self) -> None:
-        """Architect designs the solution, UI/UX designs the screens, then the Project manager
-        breaks the solution down into estimated, linked work items."""
+        """Design: the Architect writes the design (options, contract, ADRs), then breaks it into the WBS."""
         self._write_solution()
 
     def _write_solution(self) -> None:
         ws, notes = self.deps.workspace, self.state.revision_notes("architecture")
-        if self._phase_enabled("planning") and self.state.architecture is None and self._can_continue():
+        if not self._phase_enabled("planning"):
+            return
+        if self.state.architecture is None and self._can_continue():
             arch = self._record(planning.design_architecture(
                 self.deps.runner, self.state.prd, self.deps.profile.stack_summary(),
                 self.deps.profile.domain_entities, notes, self._scope,
@@ -325,40 +324,113 @@ class SDLCFlow(Flow[ProjectState]):
                 database=self.deps.profile.database, layout=self.deps.profile.layout_summary(),
             ))
             self.state.architecture = arch
-            ws.save_artifact("architecture", arch, agent="architect", inputs=["docs/prd.md"])
-            ws.write_text("docs/openapi.yaml", arch.openapi_yaml)
+            ws.save_artifact("design", arch, agent="architect", inputs=["docs/spec.md"])
+            ws.write_text(CONTRACT_PATH, arch.openapi_yaml)
             if self.deps.profile.database:
                 ws.write_text("docs/schema.prisma", arch.prisma_schema)
-                self._checkpoint("Planning: architecture, OpenAPI contract, Prisma schema")
-            else:
-                self._checkpoint("Planning: architecture, OpenAPI contract")
+            for old in ws.root.glob("docs/adr-*.md"):
+                old.unlink()
+            for adr in arch.adrs:
+                ws.write_text(f"docs/{adr.id.lower()}.md", ws.doc_header("architect", ["docs/spec.md"]) +
+                              f"# {adr.id} {adr.title}\n\n## Context\n{adr.context}\n\n## Decision\n{adr.decision}\n\n"
+                              f"## Consequences\n{adr.consequences}\n")
+            self._checkpoint("Design: design, API contract, ADRs")
+        if self.state.architecture is not None and self.state.wbs is None and self._can_continue():
+            profile = self.deps.profile
+            workdirs = {name: c.workdir for name, c in profile.components.items()}
+            self.state.wbs = self._record(planning.design_wbs(
+                self.deps.runner, self.state.prd, self.state.architecture, workdirs, profile.stack_summary(),
+                notes, layout=profile.layout_summary()))
+            ws.save_artifact("wbs", self.state.wbs, agent="architect", inputs=["docs/spec.md", "docs/design.md"])
+            self._checkpoint("Design: work breakdown structure")
+
+    @router(or_(solution_phase, "revise_solution"))
+    def architecture_gate(self) -> Literal["architecture_approved", "architecture_rejected", "stopped"]:
+        """G2 design approval (human architect; may be waived at risk tier L)."""
+        if self.state.architecture is None or self.state.wbs is None:
+            if self.state.status == "running":
+                self._stop("No design or WBS was produced (is the planning phase disabled?)")
+            return "stopped"
+        a, w = self.state.architecture, self.state.wbs
+        summary = (
+            f"Design: option '{a.recommended_option or '-'}' of {len(a.options)}; {len(a.backend_modules)} backend modules, "
+            f"{len(a.operations())} API operations, {len(a.data_models())} data models, {len(a.adrs)} ADRs. "
+            f"WBS: {len(w.tasks)} tasks in {len(w.packages)} work packages."
+        )
+        docs = ["docs/design.md", CONTRACT_PATH, "docs/wbs.md"]
+        if self.deps.profile.database:
+            docs.append("docs/schema.prisma")
+        docs += sorted(str(p.relative_to(self.deps.workspace.root)) for p in self.deps.workspace.root.glob("docs/adr-*.md"))
+
+        def discard() -> None:
+            # A change to the design changes everything planned on it.
+            self.state.architecture = self.state.wbs = self.state.plan = self.state.backlog = self.state.design = None
+            self.state.mockups = []
+
+        return self._gate("architecture", summary, docs, discard)
+
+    @listen("architecture_rejected")
+    def revise_solution(self) -> None:
+        self._write_solution()
+
+    @listen("architecture_approved")
+    def plan_phase(self) -> None:
+        """Plan: the Project manager sequences and estimates the WBS."""
+        self._write_plan()
+
+    def _write_plan(self) -> None:
+        if (not self._phase_enabled("planning") or self.state.plan is not None or self.state.wbs is None
+                or not self._can_continue()):
+            return
+        ws, wbs = self.deps.workspace, self.state.wbs
+        self.state.plan = self._record(planning.plan_delivery(
+            self.deps.runner, self.state.prd, wbs, self.state.revision_notes("estimate"), self._scope))
+        self.state.backlog = to_backlog(wbs, self.state.plan)
+        header = ws.doc_header("project_manager", ["docs/spec.md", "docs/wbs.md"])
+        ws.write_text("docs/plan.md", header + self.state.plan.to_markdown(wbs))
+        ws.write_text("docs/estimates.md", header + self.state.plan.estimates_markdown(wbs))
+        ws.write_text("docs/plan.json", self.state.plan.model_dump_json(indent=2))
+        ws.write_text("docs/backlog.json", self.state.backlog.model_dump_json(indent=2))
+        for component, paths in wbs.ownership().items():
+            ws.write_text(f"docs/ownership/{component}.txt", "\n".join(paths) + "\n")
+        self._checkpoint("Plan: delivery plan, estimates and ownership")
+
+    @router(or_(plan_phase, "revise_plan"))
+    def estimate_gate(self) -> Literal["estimate_approved", "estimate_rejected", "stopped"]:
+        """G3 estimate approval (customer, through the Product Owner)."""
+        if self.state.plan is None or self.state.backlog is None:
+            if self.state.status == "running":
+                self._stop("No delivery plan was produced (is the planning phase disabled?)")
+            return "stopped"
+        b = self.state.backlog
+        summary = (f"Plan: {len(b.milestones)} milestones, {len(b.work_items)} tasks, {b.total_points()} points; "
+                   f"critical path {' → '.join(b.critical_path())}.")
+
+        def discard() -> None:
+            self.state.plan = self.state.backlog = None
+
+        return self._gate("estimate", summary, ["docs/plan.md", "docs/estimates.md"], discard)
+
+    @listen("estimate_rejected")
+    def revise_plan(self) -> None:
+        self._write_plan()
+
+    @listen("estimate_approved")
+    def ui_phase(self) -> None:
+        """UI/UX: screens, states and prototypes (mockups) from the spec, design and plan."""
+        self._write_ui()
+
+    def _write_ui(self) -> None:
+        ws, notes = self.deps.workspace, self.state.revision_notes("ui")
         if (self._phase_enabled("design") and self.state.design is None and self.state.architecture is not None
                 and self._can_continue()):
             self.state.design = self._record(design.design_ui(
                 self.deps.runner, self.state.prd, self.state.architecture, self._scope, notes,
                 agent_guardrails.enabled(self.deps.pipeline)))
-            ws.save_artifact("design_system", self.state.design, agent="ui_ux_designer",
-                             inputs=["docs/prd.md", "docs/architecture.md"])
-            self._checkpoint("Design: design system and screen specs")
+            ws.save_artifact("ui-design", self.state.design, agent="ui_ux_designer",
+                             inputs=["docs/spec.md", "docs/design.md", "docs/plan.md"])
+            self._checkpoint("UI/UX: design system and screen specs")
         self._write_mockups(notes)
-        if (self._phase_enabled("planning") and self.state.backlog is None and self.state.architecture is not None
-                and self._can_continue()):
-            self.state.backlog = self._record(planning.plan_work(
-                self.deps.runner, self.state.prd, self.state.architecture, self.state.design,
-                self.deps.profile.stack_summary(), notes, self._scope, layout=self.deps.profile.layout_summary(),
-            ))
-            ws.save_artifact("backlog", self.state.backlog, agent="project_manager",
-                             inputs=["docs/prd.md", "docs/architecture.md", "docs/design_system.md"])
-            self._checkpoint("Planning: work breakdown and estimates")
-        est = estimation.EstimationConfig.from_pipeline(self.deps.pipeline)
-        # Only while Gate 2 is open: an approved plan is not re-estimated behind the reviewer's back.
-        if est.enabled and self.state.backlog is not None and not self.state.backlog.estimation_reviewed \
-                and not self.state.gate_approved("architecture") and self._can_continue():
-            for result in estimation.review_estimates(self.deps.runner, self.state.backlog, self.state.architecture,
-                                                      self.deps.profile, est):
-                self._record(result)
-            ws.save_artifact("backlog", self.state.backlog)
-            self._checkpoint("Planning: developers' estimation review")
 
     def _write_mockups(self, notes: str) -> None:
         """One designer call per screen (resumable), then the HTML pages, PNGs and gallery."""
@@ -379,48 +451,39 @@ class SDLCFlow(Flow[ProjectState]):
             self._checkpoint(f"Design: mockups {screen.id}")
         if {m.screen_id for m in self.state.mockups} >= {s.id for s in spec.screens}:
             ws = self.deps.workspace
-            shutil.rmtree(ws.root / "docs/mockups", ignore_errors=True)   # drop pages of a rejected design
+            shutil.rmtree(ws.root / mockup_kit.MOCKUP_DIR, ignore_errors=True)   # drop pages of a rejected design
             counts = mockup_kit.write_mockups(ws, spec, self.state.mockups, viewport)
             if counts["pages"] and not counts["pngs"]:
-                log.warning("Mockup PNGs were not rendered (no Chrome/Chromium found); the HTML pages are in docs/mockups")
+                log.warning("Mockup PNGs were not rendered (no Chrome/Chromium found); the HTML pages are in " + mockup_kit.MOCKUP_DIR + "")
             self._checkpoint(f"Design: {counts['pages']} mockup pages, {counts['pngs']} PNGs")
 
-    @router(or_(solution_phase, "revise_solution"))
-    def architecture_gate(self) -> Literal["architecture_approved", "architecture_rejected", "stopped"]:
-        if self.state.architecture is None or self.state.backlog is None:
-            if self.state.status == "running":
-                self._stop("No architecture or plan was produced (is the planning phase disabled?)")
+    @router(or_(ui_phase, "revise_ui"))
+    def ui_gate(self) -> Literal["ui_approved", "ui_rejected", "stopped"]:
+        """G4 UI design approval (customer, through the Product Owner)."""
+        if self.state.status != "running":
             return "stopped"
-        a, b = self.state.architecture, self.state.backlog
-        screens = f", {len(self.state.design.screens)} screens" if self.state.design else ""
-        summary = (
-            f"Solution: {len(a.backend_modules)} backend modules, {len(a.operations())} API operations, "
-            f"{len(a.data_models())} data models{screens}, {len(a.adrs)} ADRs. Plan: {len(b.work_items)} work items, "
-            f"{b.total_points()} points in {len(b.milestones)} milestones; critical path {' → '.join(b.critical_path())}."
-        )
-        if b.estimation_reviewed:
-            changed = sum(1 for w in b.work_items if w.pm_points is not None and w.pm_points != w.estimate_points)
-            disputed = sum(1 for w in b.work_items if w.disagreement)
-            summary += (f" Estimates reviewed by the developers: {changed} changed from the PM's draft, "
-                        f"{disputed} big disagreements reconciled (see docs/backlog.md).")
-        docs = ["docs/architecture.md", "docs/openapi.yaml", "docs/schema.prisma", "docs/design_system.md", "docs/backlog.md"]
-        if not self.deps.profile.database:
-            docs.remove("docs/schema.prisma")
-        if self.state.mockups:
-            docs.insert(docs.index("docs/design_system.md") + 1, "docs/mockups/index.html")
+        if not self._phase_enabled("design"):
+            return "ui_approved"
+        if self.state.design is None:
+            self._stop("No UI design was produced")
+            return "stopped"
+        d = self.state.design
+        states = sum(len(m.mockups) for m in self.state.mockups)
+        summary = (f"UI: {len(d.screens)} screens, {len(d.colors)} colour tokens"
+                   + (f", {states} screen-state prototypes" if states else "") + ".")
+        docs = ["docs/ui-design.md"] + ([f"{mockup_kit.MOCKUP_DIR}/index.html"] if self.state.mockups else [])
 
         def discard() -> None:
-            # A change to the design changes the plan: rewrite all three with the feedback.
-            self.state.architecture = self.state.design = self.state.backlog = None
+            self.state.design = None
             self.state.mockups = []
 
-        return self._gate("architecture", summary, docs, discard)
+        return self._gate("ui", summary, docs, discard)
 
-    @listen("architecture_rejected")
-    def revise_solution(self) -> None:
-        self._write_solution()
+    @listen("ui_rejected")
+    def revise_ui(self) -> None:
+        self._write_ui()
 
-    @router("architecture_approved")
+    @router("ui_approved")
     def after_solution(self) -> Literal["build_requested", "release_requested", "run_finished", "stopped"]:
         if self.state.status != "running":
             return "stopped"

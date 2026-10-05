@@ -140,7 +140,7 @@ def dv3_scope(ws: Workspace, comp: Component, profile: Profile, files: list[str]
             dst = ws.root / copy
             if src.exists() and dst.exists() and copy in files and dst.read_bytes() != src.read_bytes():
                 errors.append(f"DV3: {copy} must stay identical to the approved {source}; "
-                              "contract changes go through the Architect and Gate 2")
+                              "contract changes go through the Architect and the design gate (G2)")
     return errors
 
 

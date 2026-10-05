@@ -6,7 +6,7 @@ from agentic_sdlc.registry.profiles import Profile
 from agentic_sdlc.settings import load_config
 
 ALL_AGENTS = [
-    "customer", "business_analyst", "project_manager", "architect", "ui_ux_designer",
+    "business_analyst", "project_manager", "architect", "ui_ux_designer",
     "backend_developer", "frontend_developer", "qa_engineer", "deployment_engineer",
     "integration_pass", "smoke_tester",
 ]
@@ -50,15 +50,15 @@ def test_profile_context_is_added_to_backstory():
     profile = Profile.load("flutter_nestjs_ecommerce")
     reg = AgentRegistry(load_config("agents"), ModelRegistry.from_config(), profile)
     assert "Project conventions" in reg.definition("architect")["backstory"]
-    assert "Project conventions" not in reg.definition("customer")["backstory"]
+    assert "Project conventions" not in reg.definition("smoke_tester")["backstory"]
 
 
 def test_profile_overrides_agent_fields(tmp_path):
     (tmp_path / "p").mkdir()
-    (tmp_path / "p" / "profile.yaml").write_text("name: p\nagent_overrides:\n  customer:\n    goal: Custom goal\n")
+    (tmp_path / "p" / "profile.yaml").write_text("name: p\nagent_overrides:\n  business_analyst:\n    goal: Custom goal\n")
     profile = Profile.load("p", profiles_dir=tmp_path)
     reg = AgentRegistry(load_config("agents"), ModelRegistry.from_config(), profile)
-    assert reg.definition("customer")["goal"] == "Custom goal"
+    assert reg.definition("business_analyst")["goal"] == "Custom goal"
 
 
 def test_agent_with_tools_needs_a_resolver():

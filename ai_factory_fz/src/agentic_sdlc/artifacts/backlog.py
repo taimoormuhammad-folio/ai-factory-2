@@ -3,7 +3,6 @@
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from pydantic.json_schema import SkipJsonSchema
 
 
 class Epic(BaseModel):
@@ -29,6 +28,10 @@ class WorkItem(BaseModel):
     api_operations: list[str] = Field(default_factory=list, description="OpenAPI operationIds it implements (backend) or calls (app)")
     data_models: list[str] = Field(default_factory=list, description="Prisma model names it creates or changes")
     screens: list[str] = Field(default_factory=list, description="Screen ids (SCR-..) it builds")
+    # From the Architect's WBS: what the builder may write, how the task is verified, which criteria it serves.
+    owns: list[str] = Field(default_factory=list, description="Paths/globs this task may write")
+    verify: str = Field(default="", description="Command that proves the task works")
+    ac_ids: list[str] = Field(default_factory=list, description="Acceptance criteria (AC-..) it serves")
     # Estimate and its reasoning.
     estimate_points: int = Field(ge=1, le=8)
     complexity: Level = "medium"
@@ -36,15 +39,6 @@ class WorkItem(BaseModel):
     confidence: Level = "medium"
     estimate_rationale: str = Field(default="", description="One line: what drives the size")
     status: Literal["todo", "in_progress", "done", "blocked"] = "todo"
-    # Filled in by the estimation review (not part of what the Project manager writes).
-    pm_points: SkipJsonSchema[int | None] = None        # the PM's draft estimate
-    dev_points: SkipJsonSchema[int | None] = None       # the builder's estimate
-    estimated_by: SkipJsonSchema[str] = ""              # agent that re-estimated it
-    estimate_notes: SkipJsonSchema[str] = ""            # outcome: adopted / reconciled, and why
-
-    @property
-    def disagreement(self) -> bool:
-        return "reconciled" in self.estimate_notes
 
 
 class Milestone(BaseModel):
@@ -58,7 +52,6 @@ class Backlog(BaseModel):
     epics: list[Epic]
     work_items: list[WorkItem]
     milestones: list[Milestone]
-    estimation_reviewed: SkipJsonSchema[bool] = False   # set by the estimation review
 
     def total_points(self) -> int:
         return sum(w.estimate_points for w in self.work_items)
@@ -185,15 +178,6 @@ class Backlog(BaseModel):
                  "## Epics"]
         lines += [f"- **{e.id}** {e.title} (stories: {', '.join(e.story_ids)})" for e in self.epics]
         lines.append("")
-        if self.estimation_reviewed:
-            changed = [w for w in self.work_items if w.pm_points is not None and w.pm_points != w.estimate_points]
-            disputed = [w for w in self.work_items if w.disagreement]
-            lines += ["## Estimation review",
-                      f"Developers re-estimated every item: {len(changed)} changed from the PM's draft, "
-                      f"{len(disputed)} big disagreements reconciled by the PM (highest estimate risk)."]
-            lines += [f"- **{w.id}** PM {w.pm_points} / {w.estimated_by} {w.dev_points} → **{w.estimate_points}**: {w.estimate_notes}"
-                      for w in disputed]
-            lines.append("")
         for m in self.milestones:
             pts = sum(items[w].estimate_points for w in m.work_item_ids if w in items)
             lines += [f"## {m.id}: {m.name} ({pts} pts)", m.goal, "",
@@ -204,8 +188,7 @@ class Backlog(BaseModel):
                 if w:
                     builds = "; ".join(x for x in (", ".join(w.api_operations), ", ".join(w.data_models),
                                                    ", ".join(w.screens)) if x) or "-"
-                    pts = (f"{w.estimate_points} (PM {w.pm_points}, dev {w.dev_points})"
-                           if w.dev_points is not None else str(w.estimate_points))
+                    pts = str(w.estimate_points)
                     lines.append(
                         f"| {w.id} {w.title} | {w.feature or '-'} | {w.component} | {pts} | "
                         f"{w.risk}/{w.confidence} | {builds} | {', '.join(w.depends_on) or '-'} | {w.estimate_rationale or '-'} |"

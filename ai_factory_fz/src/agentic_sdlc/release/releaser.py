@@ -4,10 +4,10 @@ verify():
   1. Deployment engineer writes the Dockerfile, staging compose file, staging env (test values)
      and CI workflow.                                                    (once)
   2. Smoke tester writes the smoke suite for the journeys that are built. (once)
-  3. Round: start staging -> contract check (served OpenAPI vs docs/openapi.yaml) ->
+  3. Round: start staging -> contract check (served OpenAPI vs docs/api-contract.yaml) ->
      Integration pass reviews wiring/config and reports bugs -> smoke suite runs against
      staging -> stop staging. Problems go to the developer of their component, then the next
-     round. Rounds are limited; if problems remain, Gate 3 shows them and the human decides.
+     round. Rounds are limited; if problems remain, the release gate (G6) shows them and the human decides.
      Machine problems (port taken, Docker unusable) stop the run: no developer can fix those.
 production(): package the release (build, notes, git tag) and, if a production command is
   configured, run it.
@@ -21,6 +21,7 @@ import time
 from datetime import datetime
 from typing import Any, Callable
 
+from agentic_sdlc.artifacts.architecture import CONTRACT_PATH
 from agentic_sdlc.artifacts.reports import QAReport, WorkItemResult
 from agentic_sdlc.build.coders import Job, Worker
 from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
@@ -283,7 +284,7 @@ class Releaser:
             # Device checks were enabled after this release was verified: verify it again.
             self.s.reopen_release("On-device checks enabled since the last verification")
             self.checkpoint("Release: reopened for on-device checks")
-        if self.r.verified or self.r.failed:   # failed: waiting for the human at Gate 3
+        if self.r.verified or self.r.failed:   # failed: waiting for the human at the release gate (G6)
             return
         if self.r.deployment is None:
             result = self._guarded(self.profile.components.get("infra", self.api).agent, "deploy_staging", {},
@@ -325,7 +326,7 @@ class Releaser:
                 self.checkpoint("Release: staging verified")
                 return
             if session_round == max_rounds:
-                # Out of fix rounds: the human decides at Gate 3 (ship with known problems, or
+                # Out of fix rounds: the human decides at the release gate (G6) (ship with known problems, or
                 # reject with feedback for another fix-and-verify cycle).
                 self.r.failed = True
                 self.checkpoint(f"Release: verification still failing after {max_rounds} round(s)")
@@ -361,7 +362,7 @@ class Releaser:
             if rel.openapi_json_path:
                 status, body = http_get(self.staging.base_url + rel.openapi_json_path)
                 self.r.contract_issues = (
-                    contract_diff(self.ws.read_text("docs/openapi.yaml"), body, rel.api_prefix,
+                    contract_diff(self.ws.read_text(CONTRACT_PATH), body, rel.api_prefix,
                                   ignore_paths=[rel.health_path, rel.openapi_json_path])
                     if status == 200 else [f"GET {rel.openapi_json_path} returned {status or 'no response'}"]
                 )
@@ -404,7 +405,7 @@ class Releaser:
         return issues
 
     def fix_after_rejection(self, feedback: str) -> None:
-        """Gate 3 rejected: send the reviewer's feedback, with the open verification problems of each
+        """the release gate (G6) rejected: send the reviewer's feedback, with the open verification problems of each
         component, to that component's developer (the API's developer if nothing is open)."""
         open_by_component: dict[str, list[str]] = {}
         for c, p in self.r.open_problems:
@@ -516,7 +517,7 @@ class Releaser:
             "## Included", self.built_summary(), "",
             "## Not included", self.not_built_summary(), "",
             "## Verification", f"Staging rounds: {r.rounds}. Smoke: {'passed' if r.smoke_passed else 'n/a'}.",
-            *(["**Verification failed; approved at Gate 3 with these known problems:**",
+            *(["**Verification failed; approved at the release gate (G6) with these known problems:**",
                *[f"- [{c}] {p.splitlines()[0][:200]}" for c, p in r.open_problems], ""] if r.failed and not r.verified else []),
             f"Integration: {r.integration.summary if r.integration else 'n/a'}", "",
             "## Deployment", r.deployment.summary if r.deployment else "", "",

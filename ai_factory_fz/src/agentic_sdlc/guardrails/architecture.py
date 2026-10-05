@@ -8,6 +8,7 @@ A failing design goes back to the Architect with the list of problems (the task'
   A1 stack conformance         B1 prose matches contract    C1 entities exist        D1 3+ complete ADRs
   A2 mobile platform           B2 health endpoint           C2 money as integers     D2 security basics
   A3 repository layout         B3 API prefix                C3 id + timestamps       D3 no secrets
+                                                                                     D4 2+ design options
                                B4 shared error schema
                                B5 typed responses
                                B6 auth per operation
@@ -24,7 +25,7 @@ from agentic_sdlc.registry.profiles import Profile
 from agentic_sdlc.release.contract import operations as contract_operations
 from agentic_sdlc.release.contract import strip_prefix
 
-ALL_RULES = ["A1", "A2", "A3", "B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2", "C3", "D1", "D2", "D3"]
+ALL_RULES = ["A1", "A2", "A3", "B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2", "C3", "D1", "D2", "D3", "D4"]
 _METHODS = {"get", "post", "put", "patch", "delete"}
 _PARAM = re.compile(r"\{[^}]+\}|:[A-Za-z_]\w*")
 
@@ -270,6 +271,18 @@ def d1_adrs(c: Context) -> list[str]:
     return errors
 
 
+def d4_options(c: Context) -> list[str]:
+    """At least two design options, one of them the simplest, and a recommendation that names one."""
+    a = c.arch
+    errors = [f"D4: {len(a.options)} design options; propose at least two, including the simplest"] \
+        if len(a.options) < 2 else []
+    if a.options and not any(o.simplest for o in a.options):
+        errors.append("D4: mark the simplest option that meets the spec (simplest: true)")
+    if a.options and a.recommended_option not in {o.name for o in a.options}:
+        errors.append(f"D4: recommended_option '{a.recommended_option}' is not one of the options")
+    return errors
+
+
 def d2_security_basics(c: Context) -> list[str]:
     topics: dict[str, list[str]] = c.g.get("security_topics", {
         "authentication": ["auth", "jwt", "token", "session", "credential"],
@@ -291,7 +304,7 @@ RULES: dict[str, Callable[[Context], list[str]]] = {
     "B1": b1_prose_matches_contract, "B2": b2_health, "B3": b3_prefix, "B4": b4_error_schema,
     "B5": b5_typed_responses, "B6": b6_auth_per_operation,
     "C1": c1_entities_exist, "C2": c2_money_integers, "C3": c3_ids_and_timestamps,
-    "D1": d1_adrs, "D2": d2_security_basics, "D3": d3_no_secrets,
+    "D1": d1_adrs, "D2": d2_security_basics, "D3": d3_no_secrets, "D4": d4_options,
 }
 
 

@@ -98,9 +98,9 @@ def test_pages_pngs_and_gallery_are_written(tmp_path):
     sm = ScreenMockups(screen_id="SCR-05", mockups=[mock("success"), mock("error: offline")])
     counts = kit.write_mockups(ws, spec(), [sm], render=fake_render)
     assert counts == {"pages": 2, "pngs": 2}
-    page = (ws.root / "docs/mockups/SCR-05_error-offline.html").read_text()
+    page = (ws.root / "docs/ui/SCR-05_error-offline.html").read_text()
     assert "<style>" in page and "--primary: #0B5CAD;" in page and 'class="appbar"' in page
-    gallery = (ws.root / "docs/mockups/index.html").read_text()
+    gallery = (ws.root / "docs/ui/index.html").read_text()
     assert 'src="SCR-05_success.png"' in gallery and "SCR-05 Cart" in gallery
     assert rendered == ["SCR-05_success.png", "SCR-05_error-offline.png"]
 
@@ -110,7 +110,7 @@ def test_without_chrome_the_gallery_embeds_the_html_pages(tmp_path):
     counts = kit.write_mockups(ws, spec(), [ScreenMockups(screen_id="SCR-05", mockups=[mock("success")])],
                                render=lambda *a: False)
     assert counts == {"pages": 1, "pngs": 0}
-    assert '<iframe src="SCR-05_success.html"' in (ws.root / "docs/mockups/index.html").read_text()
+    assert '<iframe src="SCR-05_success.html"' in (ws.root / "docs/ui/index.html").read_text()
 
 
 def test_render_png_runs_headless_chrome(tmp_path):
@@ -130,15 +130,15 @@ def test_render_png_runs_headless_chrome(tmp_path):
     assert not kit.render_png(html_file, tmp_path / "b.png", chrome="/usr/bin/chrome", run=failed)
 
 
-def test_flow_draws_each_screen_shows_the_gallery_at_gate_2_and_redraws_on_rejection(tmp_path, canned, monkeypatch,
-                                                                                     capsys):
+def test_flow_draws_each_screen_shows_the_gallery_at_the_ui_gate_and_redraws_on_rejection(tmp_path, canned, monkeypatch,
+                                                                                         capsys):
     from test_flow import PIPELINE, FakeRunner, make_flow
 
     monkeypatch.setattr(kit, "render_png", lambda html_file, png_file, viewport: png_file.write_bytes(b"png") or True)
     canned = {**canned, "design_mockups": ScreenMockups(screen_id="SCR-01", mockups=[mock("loading")])}
     runner = FakeRunner(canned)
-    pipeline = {**PIPELINE, "design": {"mockups": True}}
-    answers = iter(["y", "", "n", "Denser product cards", "y", ""])
+    pipeline = {**PIPELINE, "design": {"mockups": True}, "gates": {**PIPELINE["gates"], "ui": True}}
+    answers = iter(["y", "", "y", "", "n", "Denser product cards", "y", ""])   # G1, G2, G4 rejected, G4
     flow = make_flow(tmp_path, runner, [], pipeline=pipeline)
     flow_deps = flow._deps_factory
 
@@ -155,13 +155,13 @@ def test_flow_draws_each_screen_shows_the_gallery_at_gate_2_and_redraws_on_rejec
     assert len(calls) == 2                                   # one screen, drawn again after the rejection
     assert calls[0]["states"] == "- loading" and calls[1]["revision_notes"] == "Denser product cards"
     keys = runner.keys()
-    assert keys.index("design_ui") < keys.index("design_mockups") < keys.index("plan_backlog")
-    root = tmp_path / "m1" / "docs" / "mockups"
+    assert keys.index("plan_delivery") < keys.index("design_ui") < keys.index("design_mockups")
+    root = tmp_path / "m1" / "docs" / "ui"
     assert (root / "SCR-01_loading.html").exists() and (root / "SCR-01_loading.png").exists()
     assert (root / "index.html").exists()
     assert [m.screen_id for m in flow.state.mockups] == ["SCR-01"]
-    gate_2 = capsys.readouterr().out.split("APPROVAL NEEDED: architecture")[1]
-    assert "docs/mockups/index.html" in gate_2
+    ui_gate = capsys.readouterr().out.split("APPROVAL NEEDED: ui")[1]
+    assert "docs/ui/index.html" in ui_gate
 
 
 def test_mockups_are_off_unless_the_pipeline_asks(tmp_path, canned):
@@ -171,4 +171,4 @@ def test_mockups_are_off_unless_the_pipeline_asks(tmp_path, canned):
     flow = make_flow(tmp_path, runner, ["y", "", "y", ""])
     flow.kickoff(inputs={"run_id": "m2", "brief": "shop"})
     assert "design_mockups" not in runner.keys()
-    assert not (tmp_path / "m2" / "docs" / "mockups").exists()
+    assert not (tmp_path / "m2" / "docs" / "ui").exists()

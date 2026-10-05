@@ -6,7 +6,6 @@ from agentic_sdlc.artifacts.design import DesignSystem, ScreenMockups, ScreenSpe
 from agentic_sdlc.artifacts.prd import PRD, UserStory
 from agentic_sdlc.crews.base import TaskResult, TaskRunner, artifact_guardrail
 from agentic_sdlc.design import mockups as kit
-from agentic_sdlc.guardrails.agents import ux1_tokens
 from agentic_sdlc.scope import Scope
 
 PHASE = "design"
@@ -25,8 +24,7 @@ def design_ui(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, scope
         guardrail=artifact_guardrail(
             DesignSystem,
             lambda d: [f"Must-have story {sid} is not served by any screen" for sid in d.uncovered_stories(must_haves)]
-            + scope.design_errors(d)
-            + (ux1_tokens(d) if "UX1" in guard_rules else []),
+            + scope.design_errors(d),
         ),
     )
 

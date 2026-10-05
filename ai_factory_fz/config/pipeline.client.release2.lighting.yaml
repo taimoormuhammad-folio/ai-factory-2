@@ -26,14 +26,9 @@ scope:
   max_api_operations: 28
   max_screens: 14
 
-planning:
-  estimation_review: true
-  big_gap_points: 3
-  big_gap_ratio: 2.0
-
 guardrails:
-  architect: [A1, A2, B1, B2, B3, B4, B5, B6, C1, C2, C3, D1, D2, D3]
-  agents: [DV1, DV2, DV3, QA1, QA2, DE1, ST1, CU1, UX1]
+  architect: [A1, A2, B1, B2, B3, B4, B5, B6, C1, C2, C3, D1, D2, D3, D4]
+  agents: [DV1, DV2, DV3, QA1, QA2, DE1, ST1]
 
 build:
   milestones: []
@@ -42,9 +37,11 @@ build:
   agent_timeout_s: 3600
 
 gates:
-  prd: true
-  architecture: true
-  release: false
+  prd: true          # G1 spec approval (customer, through the Product Owner)
+  architecture: true # G2 design approval (human architect)
+  estimate: true       # G3 estimate approval (customer, through the Product Owner)
+  ui: true             # G4 UI design approval (customer, through the Product Owner)
+  release: false      # G6 UAT sign-off (customer, through the Product Owner)
 
 # Risk tier L | M | H (the intake can set it per run). Tier L may waive the design gate
 # (gates.architecture_waiver_at_tier_l) and is required for gate_mode auto.
@@ -56,9 +53,6 @@ demo: true
 gate_mode: auto
 
 limits:
-  clarification_rounds: 2
   gate_rejections: 3
   qa_fix_rounds: 2
 
-budget:
-  max_total_tokens: null

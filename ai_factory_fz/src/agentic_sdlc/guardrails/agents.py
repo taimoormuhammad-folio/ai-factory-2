@@ -4,8 +4,6 @@
   QA2 bugs point to real work items and have steps/expected/actual   (QA engineer, Integration pass)
   DE1 container hygiene: non-root image, toolchain's runtime major    (Deployment engineer)
   ST1 real smoke/device suites: enough journeys, real HTTP, no mocks  (Smoke tester)
-  CU1 the Customer answers every question it was asked                (Customer)
-  UX1 valid design tokens: hex colours, unique routes, WCAG AA contrast (UI/UX designer)
 """
 
 import json
@@ -13,13 +11,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from agentic_sdlc.artifacts.design import DesignSystem
-from agentic_sdlc.artifacts.prd import CustomerAnswers
 from agentic_sdlc.artifacts.reports import QAReport
 from agentic_sdlc.registry.profiles import Profile
 from agentic_sdlc.workspace import Workspace
 
-AGENT_RULES = ["DV1", "DV2", "DV3", "QA1", "QA2", "DE1", "ST1", "CU1", "UX1"]
+AGENT_RULES = ["DV1", "DV2", "DV3", "QA1", "QA2", "DE1", "ST1"]
 
 
 def enabled(pipeline: dict[str, Any]) -> set[str]:
@@ -127,67 +123,4 @@ def st1_device_suite(ws: Workspace, profile: Profile) -> list[str]:
         errors.append(f"ST1: no on-device journey tests (testWidgets) in {dev.test_dir}/")
     if re.search(r"\bMock(Client|Dio|HttpClient)\b|package:mocktail|package:mockito|http_mock_adapter", text):
         errors.append("ST1: the device tests mock the network; they must use the real staging API")
-    return errors
-
-
-# ---------- Customer ----------
-
-def cu1_answers(answers: CustomerAnswers, questions: list[str]) -> list[str]:
-    """Every question gets a non-empty answer. Matched by question text; if the Customer rephrased
-    the questions, one non-empty answer per question is enough."""
-    given = [a for a in answers.answers if a.answer.strip()]
-    answered = {_q(a.question) for a in given}
-    missing = [q for q in questions if _q(q) not in answered]
-    if not missing or len(given) >= len(questions):
-        return []
-    return [f"CU1: no answer for: {q}" for q in missing]
-
-
-def _q(text: str) -> str:
-    return re.sub(r"\W+", " ", text).strip().lower()
-
-
-# ---------- UI/UX designer ----------
-
-_HEX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
-
-
-def _luminance(hex_color: str) -> float:
-    h = hex_color.lstrip("#")
-    if len(h) == 3:
-        h = "".join(c * 2 for c in h)
-    if len(h) == 8:
-        h = h[2:]  # AARRGGBB (Flutter style): ignore alpha
-    def channel(v: int) -> float:
-        c = v / 255
-        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
-    r, g, b = (channel(int(h[i:i + 2], 16)) for i in (0, 2, 4))
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-
-def contrast(a: str, b: str) -> float:
-    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
-    return (la + 0.05) / (lb + 0.05)
-
-
-def ux1_tokens(design: DesignSystem, min_contrast: float = 4.5) -> list[str]:
-    errors = []
-    for c in design.colors:
-        for mode in ("light", "dark"):
-            value = getattr(c, mode)
-            if not _HEX.match(value.strip()):
-                errors.append(f"UX1: colour {c.name} ({mode}) '{value}' is not a hex colour (#RRGGBB)")
-    routes = [s.route for s in design.screens]
-    errors += [f"UX1: route {r} is used by more than one screen" for r in sorted({r for r in routes if routes.count(r) > 1})]
-    by_name = {c.name.lower(): c for c in design.colors}
-    for c in design.colors:
-        if c.name.lower().startswith("on") and len(c.name) > 2:
-            base = by_name.get(c.name[2:].lower())
-            if not base:
-                continue
-            for mode in ("light", "dark"):
-                fg, bg = getattr(c, mode).strip(), getattr(base, mode).strip()
-                if _HEX.match(fg) and _HEX.match(bg) and contrast(fg, bg) < min_contrast:
-                    errors.append(f"UX1: {c.name} on {base.name} ({mode}) has contrast {contrast(fg, bg):.2f}:1; "
-                                  f"WCAG AA needs {min_contrast}:1 for text")
     return errors

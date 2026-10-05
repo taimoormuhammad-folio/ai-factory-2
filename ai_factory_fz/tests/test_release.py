@@ -118,7 +118,7 @@ def releaser(tmp_path, prd, backlog, worker, staging=None, sandbox=None, cfg=Non
     state = ProjectState(run_id="r", prd=prd, backlog=backlog)
     state.build.items = {"WI-001": ItemProgress(status="done", summary="api")}
     ws = Workspace.create("r", runs_dir=tmp_path)
-    ws.write_text("docs/openapi.yaml", CONTRACT)
+    ws.write_text("docs/api-contract.yaml", CONTRACT)
     profile = Profile.load("flutter_nestjs_ecommerce")
     if not openapi:
         profile = profile.model_copy(update={"release": profile.release.model_copy(update={"openapi_json_path": ""})})

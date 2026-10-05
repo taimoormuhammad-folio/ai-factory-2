@@ -36,24 +36,24 @@ def test_decisions_are_written_to_gate_files_with_the_approved_hashes(tmp_path, 
     root = tmp_path / "g1"
     g1 = json.loads((root / "gates" / "G1.gate").read_text())
     assert g1["approved"] and g1["approver"] == "Pat Owner" and g1["gate"] == "prd"
-    assert set(g1["artifact_hashes"]) == {"docs/prd.md", "docs/clarifications.md"}
+    assert set(g1["artifact_hashes"]) == {"docs/spec.md", "docs/intent.md"}
     assert (root / "gates" / "G2.gate").exists()
     status = (root / "status.md").read_text()
     assert "| G1 prd | approved | Pat Owner |" in status and "Status: **completed**" in status
-    assert (root / "docs" / "prd.md").read_text().startswith("---\nagent: business_analyst\nstatus: draft")
+    assert (root / "docs" / "spec.md").read_text().startswith("---\nagent: business_analyst\nstatus: draft")
 
 
 def test_changing_an_approved_document_asks_again(tmp_path, canned):
     flow = make_flow(tmp_path, FakeRunner(canned), ["y", "", "y", ""])
     flow.kickoff(inputs={"run_id": "g2", "brief": "shop"})
     root = tmp_path / "g2"
-    (root / "docs" / "prd.md").write_text("edited by someone after approval\n")
+    (root / "docs" / "spec.md").write_text("edited by someone after approval\n")
     answers = []
     resumed = make_flow(tmp_path, FakeRunner(canned), ["y", "", "y", ""], restore_json=(root / "state.json").read_text())
     resumed._deps_factory = (lambda f: (lambda st: _recording(f(st), answers)))(resumed._deps_factory)
     resumed.kickoff(inputs={"run_id": "g2"})
     reopened = [d for d in resumed.state.gate_history if d.decided_by == "system"]
-    assert reopened and "docs/prd.md" in reopened[0].feedback
+    assert reopened and "docs/spec.md" in reopened[0].feedback
     assert answers[0].startswith("Approve?")          # G1 was asked again
     assert resumed.state.gate_approved("prd")
 
@@ -68,7 +68,7 @@ def test_rejected_drafts_are_kept_in_history(tmp_path, canned):
     flow = make_flow(tmp_path, FakeRunner(canned), ["n", "Add guest checkout", "y", "", "y", ""])
     flow.kickoff(inputs={"run_id": "g3", "brief": "shop"})
     history = tmp_path / "g3" / "docs" / "history"
-    assert (history / "prd.v1.md").exists() and (history / "clarifications.v1.md").exists()
+    assert (history / "spec.v1.md").exists()
 
 
 def test_async_gate_waits_for_uv_run_approve_then_resumes(tmp_path, canned, monkeypatch):
@@ -81,7 +81,7 @@ def test_async_gate_waits_for_uv_run_approve_then_resumes(tmp_path, canned, monk
     root = tmp_path / "g4"
     assert flow.state.status == "stopped" and "uv run approve g4 G1" in flow.state.stop_reason
     pending = json.loads((root / "gates" / "G1.pending.json").read_text())
-    assert pending["gate"] == "prd" and "docs/prd.md" in pending["artifact_hashes"]
+    assert pending["gate"] == "prd" and "docs/spec.md" in pending["artifact_hashes"]
 
     with pytest.raises(SystemExit, match="interactive"):
         main.approve(["g4", "G1", "--as", "Pat Owner"], input_fn=lambda _p: "y", is_tty=False)
@@ -105,7 +105,7 @@ def test_approve_refuses_documents_changed_after_the_request(tmp_path, canned, m
     monkeypatch.setattr(workspace, "RUNS_DIR", tmp_path)
     flow = make_flow(tmp_path, FakeRunner(canned), [], pipeline={**PIPELINE, "gate_mode": "async"})
     flow.kickoff(inputs={"run_id": "g5", "brief": "shop"})
-    (tmp_path / "g5" / "docs" / "prd.md").write_text("changed\n")
+    (tmp_path / "g5" / "docs" / "spec.md").write_text("changed\n")
     with pytest.raises(SystemExit, match="changed since the gate was requested"):
         main.approve(["g5", "G1", "--as", "Pat Owner"], input_fn=lambda _p: "y", is_tty=True)
 

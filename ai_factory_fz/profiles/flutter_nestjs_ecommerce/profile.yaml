@@ -52,7 +52,7 @@ components:
         run: npm install --save-dev prisma@^6
       - copy_from: docs/schema.prisma
         copy_to: server/prisma/schema.prisma
-      - copy_from: docs/openapi.yaml
+      - copy_from: docs/api-contract.yaml
         copy_to: server/openapi.yaml
       - workdir: server
         run: npx prisma generate
@@ -64,10 +64,10 @@ components:
     scaffold:
       - run: flutter create --org com.shopease --project-name shopease_app --platforms android,ios app
         creates: app/pubspec.yaml
-      - copy_from: docs/openapi.yaml
+      - copy_from: docs/api-contract.yaml
         copy_to: app/openapi.yaml
       - runtime: openapi
-        run: generate -i docs/openapi.yaml -g dart-dio -o app/packages/api_client --additional-properties=pubName=api_client
+        run: generate -i docs/api-contract.yaml -g dart-dio -o app/packages/api_client --additional-properties=pubName=api_client
         creates: app/packages/api_client/pubspec.yaml
       - workdir: app
         run: flutter pub get
@@ -95,7 +95,7 @@ guardrails:
   min_adrs: 3
   # Agent guardrails (DV3: copies of the approved contract must not drift)
   contract_copies:
-    docs/openapi.yaml: [server/openapi.yaml, apps/api/openapi.yaml, app/openapi.yaml]
+    docs/api-contract.yaml: [server/openapi.yaml, apps/api/openapi.yaml, app/openapi.yaml]
     docs/schema.prisma: [server/prisma/schema.prisma, apps/api/prisma/schema.prisma]
   scope_also_allowed: []        # extra paths any coding item may change (e.g. [.github/])
   secret_scan_ignore: []        # paths skipped by the secret scan

@@ -40,7 +40,7 @@ def test_claude_code_llm_enables_only_the_web_tools():
     assert cmd[cmd.index("--tools") + 1] == "WebSearch,WebFetch"
     assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
     assert cmd[cmd.index("--allowedTools") + 1: cmd.index("--allowedTools") + 3] == ["WebSearch", "WebFetch"]
-    plain = registry().build("customer").llm.build_command("sys", None)
+    plain = registry().build("business_analyst").llm.build_command("sys", None)
     assert plain[plain.index("--tools") + 1] == "" and "--allowedTools" not in plain
 
 
@@ -55,7 +55,7 @@ def test_api_path_gets_crewai_web_tools(monkeypatch):
     assert any("website" in n.lower() for n in names) and not any("search the internet" in n.lower() for n in names)
     monkeypatch.setenv("SERPER_API_KEY", "k")
     assert len(registry(Backend.API).build("architect").tools) == 2
-    assert registry(Backend.API).build("customer").tools == []
+    assert registry(Backend.API).build("business_analyst").tools == []
 
 
 def test_coding_worker_allows_web_for_developers_not_qa(tmp_path):

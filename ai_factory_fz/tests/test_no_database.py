@@ -78,7 +78,7 @@ def test_data_model_rules_only_run_with_a_database():
 
 def test_layout_names_the_profile_folders_and_the_provided_mock():
     layout = Profile.load(NETSUITE).layout_summary()
-    for path in ("server/", "app/", "docs/openapi.yaml", "app/packages/api_client/", "infra/suitecommerce-mock/"):
+    for path in ("server/", "app/", "docs/api-contract.yaml", "app/packages/api_client/", "infra/suitecommerce-mock/"):
         assert path in layout
     assert "do not rewrite it" in layout
     assert Profile.load(NETSUITE).layout_roots() == {"server", "app", "docs", "infra", ".github"}

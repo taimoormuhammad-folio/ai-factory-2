@@ -46,7 +46,6 @@ tiers:
 # `effort` (low | medium | high | xhigh | max) applies on the Claude Code path only.
 
 agents:
-  customer: balanced
   business_analyst: balanced
   project_manager: balanced
 

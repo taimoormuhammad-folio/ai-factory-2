@@ -5,7 +5,6 @@ import json
 import pytest
 
 from agentic_sdlc.artifacts.design import ColorToken, DesignSystem, NavigationLink, ScreenSpec, SharedWidget, TypeStyle
-from agentic_sdlc.artifacts.prd import CustomerAnswers, QAPair
 from agentic_sdlc.artifacts.reports import Bug, QAReport
 from agentic_sdlc.guardrails import agents as ag
 from agentic_sdlc.guardrails import code as cg
@@ -26,7 +25,7 @@ def ws(tmp_path):
     w = Workspace.create("r", runs_dir=tmp_path)
     w.write_text("server/src/cart.spec.ts", "it('adds', () => {});\nit('removes', () => {});\n")
     w.write_text("app/test/cart_test.dart", "testWidgets('shows cart', (t) async {});\n")
-    w.write_text("docs/openapi.yaml", "openapi: 3.1.0\n")
+    w.write_text("docs/api-contract.yaml", "openapi: 3.1.0\n")
     w.write_text("server/openapi.yaml", "openapi: 3.1.0\n")
     w.commit("baseline")
     return w
@@ -74,7 +73,7 @@ def test_dv3_scope_and_contract_copies(ws, profile):
     ws.write_text("server/openapi.yaml", "openapi: 3.1.0\n# drifted\n")
     hits = cg.check_changes(ws, profile.components["backend"], profile, {"DV3"})
     assert "DV3: app/lib/main.dart is outside this work item's component (server/); undo that change" in hits
-    assert any("server/openapi.yaml must stay identical to the approved docs/openapi.yaml" in h for h in hits)
+    assert any("server/openapi.yaml must stay identical to the approved docs/api-contract.yaml" in h for h in hits)
 
 
 def test_dv3_allows_reports_infra(ws, profile):
@@ -144,17 +143,6 @@ def test_st1_device_suite(ws, profile):
 
 # ---------- CU1 ----------
 
-def test_cu1_every_question_answered():
-    qs = ["Guest checkout?", "Which platforms?"]
-    full = CustomerAnswers(answers=[QAPair(question="Guest checkout?", answer="No"), QAPair(question="Which platforms?", answer="Both")])
-    assert ag.cu1_answers(full, qs) == []
-    rephrased = CustomerAnswers(answers=[QAPair(question="Guest checkout", answer="No"), QAPair(question="Platforms", answer="Both")])
-    assert ag.cu1_answers(rephrased, qs) == []
-    partial = CustomerAnswers(answers=[QAPair(question="Guest checkout?", answer="No")])
-    assert ag.cu1_answers(partial, qs) == ["CU1: no answer for: Which platforms?"]
-
-
-# ---------- UX1 ----------
 
 def design(colors, routes=("/a", "/b")):
     return DesignSystem(colors=colors, typography=[TypeStyle(name="b", size=14, weight=400, line_height=1.4)],
@@ -163,18 +151,6 @@ def design(colors, routes=("/a", "/b")):
                                  for i, r in enumerate(routes)],
                         navigation=[NavigationLink(from_screen="a", to_screen="b", trigger="t")], accessibility=[])
 
-
-def test_ux1_colours_routes_contrast():
-    good = design([ColorToken(name="primary", light="#1A73E8", dark="#8AB4F8"),
-                   ColorToken(name="onPrimary", light="#FFFFFF", dark="#000000")])
-    assert ag.ux1_tokens(good) == []
-    bad = design([ColorToken(name="primary", light="#FFEB3B", dark="red"),
-                  ColorToken(name="onPrimary", light="#FFFFFF", dark="#000000")], routes=("/a", "/a"))
-    hits = ag.ux1_tokens(bad)
-    assert any("'red' is not a hex colour" in h for h in hits)
-    assert "UX1: route /a is used by more than one screen" in hits
-    assert any("onPrimary on primary (light) has contrast" in h for h in hits)
-    assert round(ag.contrast("#000000", "#FFFFFF"), 1) == 21.0
 
 
 def test_rules_are_chosen_per_pipeline():
