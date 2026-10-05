@@ -1,9 +1,0 @@
-.env
-__pycache__/
-.DS_Store
-.venv/
-.checkpoints/
-.checkpoints.db
-artifacts/
-apps/
-lib/
