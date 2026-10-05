@@ -129,9 +129,10 @@ class Releaser:
                                "environment variable."),
                 "compose_services": " plus PostgreSQL 16",
                 "env_rule": " DATABASE_URL must point at the compose database.",
+                "data_check": "database migrations, ",
             }
         return {"start_rule": "It listens on the PORT environment variable (the API has no database).",
-                "compose_services": "", "env_rule": ""}
+                "compose_services": "", "env_rule": "", "data_check": ""}
 
     # ---------- guardrails ----------
 

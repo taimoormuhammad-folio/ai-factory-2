@@ -16,7 +16,7 @@
 
 #
 
-# Temporary: all Anthropic agents use Haiku only (cost/speed). Restore Sonnet/Opus tiers later.
+# Tiers: reasoning = Opus 5.5 (design), balanced = Sonnet 5.5 (most agents), fast = Haiku 4.5 (quick checks).
 
 # Keep anthropic/... model ids so flipping LLM_PROVIDER=anthropic needs no other edits.
 
@@ -27,12 +27,12 @@ defaults:
 
 tiers:
   reasoning:
-    model: anthropic/claude-haiku-4-5-20251001
+    model: anthropic/claude-opus-5-5
 
-    fallbacks: [anthropic/claude-haiku-4-5-20251001]
+    fallbacks: [anthropic/claude-sonnet-5-5]
 
   balanced:
-    model: anthropic/claude-haiku-4-5-20251001
+    model: anthropic/claude-sonnet-5-5
 
     fallbacks: [anthropic/claude-haiku-4-5-20251001]
 
@@ -48,12 +48,12 @@ tiers:
 agents:
   customer: balanced
   business_analyst: balanced
-  project_manager: fast
+  project_manager: balanced
 
   architect:
-    model: anthropic/claude-haiku-4-5-20251001
+    model: anthropic/claude-opus-5-5
 
-    fallbacks: [anthropic/claude-haiku-4-5-20251001]
+    fallbacks: [anthropic/claude-sonnet-5-5]
 
     effort: high
 

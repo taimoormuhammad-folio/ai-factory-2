@@ -107,10 +107,10 @@ def test_pipeline_model_overrides():
 
     reg = ModelRegistry.from_config(load_config("pipeline.demo")["models"])
     reg.backend = Backend.API
-    assert reg.spec_for("architect").model == "anthropic/claude-haiku-4-5-20251001"
-    assert reg.spec_for("backend_developer").model == "anthropic/claude-haiku-4-5-20251001"
+    assert reg.spec_for("architect").model == "anthropic/claude-sonnet-5-5"   # demo: balanced tier
+    assert reg.spec_for("backend_developer").model == "anthropic/claude-sonnet-5-5"
     assert "effort" not in reg.spec_for("architect").params
-    assert ModelRegistry.from_config().spec_for("architect").model.endswith("claude-haiku-4-5-20251001")
+    assert ModelRegistry.from_config().spec_for("architect").model.endswith("claude-opus-5-5")
     with pytest.raises(KeyError, match="unknown agents"):
         ModelRegistry.from_config({"nobody": "fast"})
 

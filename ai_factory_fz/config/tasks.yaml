@@ -338,7 +338,7 @@ integration_review:
     {tooling}
 
     Check: configuration and environment variables ({env_file}, config validation), the API prefix,
-    database migrations, CORS/security headers, error format, and that implemented endpoints match
+    {data_check}CORS/security headers, error format, and that implemented endpoints match
     the contract (see the contract check). Fix small glue problems yourself (configuration, wiring,
     missing registration of a module) and say so in criteria_checked. Report anything else as a
     bug with the work item it belongs to (use RELEASE if unclear). Severity: blocker if the system

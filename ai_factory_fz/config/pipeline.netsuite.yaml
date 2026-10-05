@@ -1,0 +1,75 @@
+# NetSuite B2B store: every phase, every gate, all milestones.
+# Use it with:  uv run kickoff --brief briefs/netsuite_b2b_store.md --profile flutter_nestjs_netsuite --pipeline pipeline.netsuite
+
+phases:
+  discovery: true     # Customer + Business analyst -> PRD
+  planning: true      # Architect -> architecture, OpenAPI (no Prisma: no database); then Project manager -> WBS + estimates
+  design: true        # UI/UX designer -> design system, screen specs (between Architect and Project manager)
+  build: true         # Backend + Frontend + QA loop (see build: below)
+  release: true       # Deployment engineer, staging, Integration pass, Smoke tester, Gate 3, production
+
+scope:
+  guidance: >
+    A B2B store app on NetSuite SuiteCommerce through our own stateless API. The app talks only to our
+    API; the API talks to SuiteCommerce. No database, no sign-up, no card payments. Screens: splash,
+    sign in, item list with search, item detail, cart, checkout (addresses, shipping method, PO number,
+    review) and order confirmation.
+
+planning:
+  # Developers re-estimate the items they will build; the PM reconciles big gaps.
+  estimation_review: true
+  big_gap_points: 3          # a gap this big (or a 2x ratio) goes to the PM to reconcile
+  big_gap_ratio: 2.0
+
+guardrails:
+  # Checks on the Architect's output; a failing design goes back to the Architect.
+  # A1 stack, A2 mobile platform, B1 prose matches contract, B2 health endpoint, B3 API prefix,
+  # B4 shared error schema, B5 typed responses, B6 auth per operation, C1 entities exist,
+  # C2 money as integers, C3 id + timestamps, D1 3+ ADRs, D2 security basics, D3 no secrets.
+  architect: [A1, A2, B1, B2, B3, B4, B5, B6, C1, C2, C3, D1, D2, D3]
+  # Checks on the other agents' work (a failing result goes back to the same agent):
+  # DV1 no weakening tests, DV2 no secrets, DV3 stay in scope (coding agents); QA1 consistent
+  # verdict, QA2 real work items (QA engineer, Integration pass); DE1 container hygiene
+  # (Deployment engineer); ST1 real smoke/device suites (Smoke tester); CU1 all questions answered
+  # (Customer); UX1 valid colours, unique routes, WCAG AA contrast (UI/UX designer).
+  agents: [DV1, DV2, DV3, QA1, QA2, DE1, ST1, CU1, UX1]
+
+build:
+  # Which backlog milestones to build, e.g. [M1, M2]. Empty list = all of them.
+  # Override per run: uv run resume <run_id> --milestones M1,M2  (or SDLC_BUILD_MILESTONES=M1,M2)
+  milestones: []
+  # docker (recommended) or local (runs build/test commands on this machine).
+  # Override with the SDLC_SANDBOX environment variable.
+  sandbox: docker
+  check_fix_attempts: 2      # extra tries when build/tests fail after a work item
+  agent_timeout_s: 3600      # per coding-agent job
+
+release:
+  staging_port: 3100
+  startup_timeout_s: 90      # wait this long for the health endpoint
+  fix_rounds: 2              # developer fix rounds when staging verification fails
+  # Your production deploy command, run from the run folder after Gate 3 approval
+  # (e.g. "bash infra/deploy.sh"). Empty: package only (build, release notes, git tag).
+  # Run the mobile app on an Android emulator against staging (needs `uv run setup-android` once).
+  device:
+    enabled: true
+    headless: true           # pipeline runs; `uv run showcase` opens a window
+    boot_timeout_s: 420
+  production_command: ""
+  production_timeout_s: 1800
+
+gates:
+  prd: true
+  architecture: true
+  release: true
+
+# console: ask on the terminal. auto: approve without asking (tests, demos).
+# Override with the SDLC_GATE_MODE environment variable.
+gate_mode: console
+
+limits:
+  clarification_rounds: 3   # Business analyst <-> Customer question rounds
+  gate_rejections: 3        # revisions allowed per gate before the run stops
+  qa_fix_rounds: 3          # QA -> dev fix loops per milestone (M3)
+
+# No token budget for this pipeline: the run is not stopped by token usage.

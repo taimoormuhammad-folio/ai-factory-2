@@ -246,7 +246,7 @@ def test_staging_refuses_a_port_held_by_something_else(tmp_path, monkeypatch):
 
 def test_compose_failures_from_the_machine_are_environment_errors(tmp_path, monkeypatch):
     st, _ = compose_staging(tmp_path, [False], [], monkeypatch)
-    (st.ws.root / "infra").mkdir()
+    (st.ws.root / "infra").mkdir(exist_ok=True)
     for f in (st.rel.compose_file, st.rel.env_file):
         st.ws.write_text(f, "x")
     monkeypatch.setattr(st, "_compose", lambda *a: subprocess.CompletedProcess(a, 1, "",
