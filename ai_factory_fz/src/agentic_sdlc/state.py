@@ -21,8 +21,13 @@ class GateDecision(BaseModel):
     gate: str
     approved: bool
     feedback: str = ""
-    decided_by: str = "human"
+    decided_by: str = "human"          # human | auto | config | waiver | system (a reopen, not a rejection)
     decided_at: str = Field(default_factory=utcnow)
+    gate_id: str = ""                  # G1 … G7
+    approver: str = ""                 # the named person (human decisions)
+    role: str = ""                     # e.g. product owner, architect, developer of record
+    risk_note: str = ""                # the approver's own words (merge gate)
+    artifact_hashes: dict[str, str] = Field(default_factory=dict)   # what was approved
 
 
 class UsageRecord(BaseModel):
@@ -105,6 +110,7 @@ class ProjectState(FlowState):
     prd: PRD | None = None
     backlog: Backlog | None = None
     architecture: ArchitectureDoc | None = None
+    risk_tier: str = ""                 # L | M | H (from the intake); empty = the pipeline's risk_tier
     design: DesignSystem | None = None
     mockups: list[ScreenMockups] = Field(default_factory=list)   # per screen, when design.mockups is on
     build: BuildState = Field(default_factory=BuildState)

@@ -46,6 +46,13 @@ gates:
   architecture: true
   release: false
 
+# Risk tier L | M | H (the intake can set it per run). Tier L may waive the design gate
+# (gates.architecture_waiver_at_tier_l) and is required for gate_mode auto.
+risk_tier: L
+# Demo/test pipeline: allows gate_mode auto (gates approved without a person, recorded as "auto").
+demo: true
+# console: ask on the terminal. async: stop and wait for `uv run approve <run_id> <G> --as "Name"`,
+# then `uv run resume`. auto: demo pipelines at tier L only. Override with SDLC_GATE_MODE.
 gate_mode: auto
 
 limits:

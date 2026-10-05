@@ -68,6 +68,43 @@ def resume() -> None:
     resume_run(args.run_id)
 
 
+def approve(argv: list[str] | None = None, input_fn=input, is_tty=None) -> None:
+    """Record a person's decision on a gate the run is waiting for (async gates). Interactive only."""
+    from agentic_sdlc.gates import files as gate_files
+    from agentic_sdlc.gates.human import ask, print_request
+    from agentic_sdlc.state import GateDecision
+
+    parser = argparse.ArgumentParser(description="Approve or reject a gate of a waiting run")
+    parser.add_argument("run_id")
+    parser.add_argument("gate", help="Gate id, e.g. G1")
+    parser.add_argument("--as", dest="approver", required=True, help="Your name (recorded on the decision)")
+    parser.add_argument("--role", default="", help="e.g. product owner, architect, developer of record")
+    args = parser.parse_args(argv)
+    if not (is_tty if is_tty is not None else sys.stdin.isatty()):
+        raise SystemExit("Gates are approved by a person at an interactive terminal; run this yourself.")
+    if os.environ.get("CLAUDECODE") or os.environ.get("SDLC_AGENT"):
+        raise SystemExit("This looks like an agent session; gates are approved by people in their own terminal.")
+    problem = gate_files.approver_problem(args.approver)
+    if problem:
+        raise SystemExit(problem)
+    ws = Workspace.open(args.run_id)
+    gid = args.gate.upper()
+    pending = gate_files.read_pending(ws.root, gid)
+    if pending is None:
+        raise SystemExit(f"Run {args.run_id} is not waiting for {gid}.")
+    changed = gate_files.changed_since(ws.root, pending["artifact_hashes"])
+    if changed:
+        raise SystemExit(f"These documents changed since the gate was requested: {', '.join(changed)}. "
+                         f"Resume the run so it asks again.")
+    print_request(f"{gid} ({pending['gate']})", pending["summary"], [ws.root / d for d in pending["documents"]])
+    decision: GateDecision = ask(pending["gate"], input_fn, need_risk_note=pending["gate"] == "merge")
+    decision.gate_id, decision.approver, decision.role = gid, args.approver.strip(), args.role
+    decision.artifact_hashes = pending["artifact_hashes"]
+    gate_files.write_decision(ws.root, decision)
+    verdict = "approved" if decision.approved else "rejected"
+    print(f"{gid} {verdict} by {decision.approver}. Continue the run with:  uv run resume {args.run_id}")
+
+
 def mockups() -> None:
     """Draw the UI/UX designer's screen mockups for an existing run (docs/mockups/), without re-running it."""
     from agentic_sdlc.flow import default_deps

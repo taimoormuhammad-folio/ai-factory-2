@@ -186,10 +186,12 @@ def test_build_phase_runs_after_design(tmp_path, canned):
     flow = SDLCFlow(deps_factory=deps_factory)
     flow.kickoff(inputs={"run_id": "rb", "brief": "shop"})
     s = flow.state
-    assert s.status == "completed", s.stop_reason
+    assert s.status == "stopped" and "blocked.md" in s.stop_reason   # blocked work stops for a person
     assert s.build.item("WI-001").status == "done"
     assert s.build.item("WI-002").status == "blocked"  # frontend: no flutter
     assert s.build.milestone("M1").status == "partial"
+    assert "WI-002" in (tmp_path / "rb" / "blocked.md").read_text()
+    assert "Blocked work needs a person" in (tmp_path / "rb" / "status.md").read_text()
     summary = (tmp_path / "rb" / "reports" / "run_summary.md").read_text()
     assert "## Build" in summary and "| WI-002 | blocked |" in summary
 
@@ -200,7 +202,8 @@ def _release_flow(tmp_path, canned, answers, worker):
 
     pipeline = {**PIPELINE, "phases": {**PIPELINE["phases"], "build": True, "release": True},
                 "build": {"milestones": ["M1"]}, "release": {"fix_rounds": 1},
-                "guardrails": {"agents": []}}   # fakes write no real files; guardrails are tested separately
+                "guardrails": {"agents": []},   # fakes write no real files; guardrails are tested separately
+                "limits": {**PIPELINE["limits"], "stop_on_blocked": False}}   # release a partial build (app blocked)
     answers = iter(answers)
 
     def deps_factory(state):

@@ -70,12 +70,29 @@ class Workspace:
     def read_text(self, rel_path: str) -> str:
         return self.resolve(rel_path).read_text(encoding="utf-8")
 
-    def save_artifact(self, name: str, artifact: BaseModel) -> None:
-        """Save an artifact as JSON (for machines) and Markdown (for people) under docs/."""
+    def doc_header(self, agent: str, inputs: list[str], status: str = "draft") -> str:
+        """Standard header for a step's output: who wrote it, from which inputs (with sha256), its status."""
+        import hashlib
+        from datetime import datetime, timezone
+
+        lines = ["---", f"agent: {agent}", f"status: {status}",
+                 f"written_at: {datetime.now(timezone.utc).isoformat(timespec='seconds')}", "inputs:"]
+        for rel in inputs:
+            p = self.root / rel
+            digest = hashlib.sha256(p.read_bytes()).hexdigest()[:16] if p.is_file() else "missing"
+            lines.append(f"  - {rel} (sha256 {digest})")
+        if not inputs:
+            lines[-1] = "inputs: []"
+        return "\n".join(lines + ["---", ""])
+
+    def save_artifact(self, name: str, artifact: BaseModel, agent: str = "", inputs: list[str] | None = None) -> None:
+        """Save an artifact as JSON (for machines) and Markdown (for people) under docs/.
+        With `agent`, the Markdown starts with the standard header (agent, inputs + hashes, status)."""
         self.write_text(f"docs/{name}.json", artifact.model_dump_json(indent=2))
         to_md = getattr(artifact, "to_markdown", None)
         if to_md:
-            self.write_text(f"docs/{name}.md", to_md())
+            header = self.doc_header(agent, inputs or []) if agent else ""
+            self.write_text(f"docs/{name}.md", header + to_md())
 
     def save_state(self, state: BaseModel) -> None:
         tmp = self.root / f"{STATE_FILE}.tmp"

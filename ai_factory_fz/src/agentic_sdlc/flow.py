@@ -22,6 +22,7 @@ from agentic_sdlc.design import mockups as mockup_kit
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import architecture as architecture_guardrails
 from agentic_sdlc.crews.base import TaskResult, TaskRunner
+from agentic_sdlc.gates import files as gate_files
 from agentic_sdlc.gates.human import InputFn, gate_mode, request_approval
 from agentic_sdlc.registry.agents import AgentRegistry
 from agentic_sdlc.registry.profiles import Profile
@@ -99,7 +100,44 @@ class SDLCFlow(Flow[ProjectState]):
 
     def _checkpoint(self, message: str) -> None:
         self.deps.workspace.save_state(self.state)
+        self.deps.workspace.write_text("status.md", self._status_markdown(message))
         self.deps.workspace.commit(message)
+
+    def _status_markdown(self, last_step: str) -> str:
+        """status.md: the run at a glance, rewritten at every checkpoint."""
+        s = self.state
+        lines = [f"# Run {s.run_id}", "", f"Status: **{s.status}**" + (f" ({s.stop_reason})" if s.stop_reason else ""),
+                 f"Risk tier: {(s.risk_tier or self.deps.pipeline.get('risk_tier') or 'M').upper()}",
+                 f"Last step: {last_step}", "", "## Gates", "| Gate | Decision | By | When |", "|---|---|---|---|"]
+        latest: dict[str, GateDecision] = {}
+        for d in s.gate_history:
+            latest[d.gate] = d
+        for gate, d in latest.items():
+            verdict = "approved" if d.approved else ("reopened" if d.decided_by == "system" else "rejected")
+            lines.append(f"| {d.gate_id or gate_files.gate_id(gate)} {gate} | {verdict} | "
+                         f"{d.approver or d.decided_by} | {d.decided_at} |")
+        items = s.build.items.values()
+        if items:
+            counts: dict[str, int] = {}
+            for p in items:
+                counts[p.status] = counts.get(p.status, 0) + 1
+            lines += ["", "## Build", ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))]
+        if (self.deps.workspace.root / "blocked.md").exists():
+            lines += ["", "Blocked work needs a person: see blocked.md"]
+        return "\n".join(lines) + "\n"
+
+    def _write_blocked(self) -> bool:
+        """blocked.md lists work agents could not do (missing input, toolchain, ambiguity). True if any."""
+        blocked = [(wid, p.reason) for wid, p in self.state.build.items.items() if p.status == "blocked"]
+        path = self.deps.workspace.root / "blocked.md"
+        if not blocked:
+            path.unlink(missing_ok=True)
+            return False
+        lines = ["# Blocked", "", "These work items could not be done. Resolve the cause (answer the question, "
+                 "provide the input or toolchain), then `uv run resume " + self.state.run_id + "`.", ""]
+        lines += [f"- **{wid}**: {reason or 'blocked'}" for wid, reason in blocked]
+        self.deps.workspace.write_text("blocked.md", "\n".join(lines) + "\n")
+        return True
 
     def _record(self, result: TaskResult) -> Any:
         self.state.usage.append(result.usage)
@@ -134,37 +172,69 @@ class SDLCFlow(Flow[ProjectState]):
     def _can_continue(self) -> bool:
         return self.state.status == "running" and not self._over_budget()
 
+    @property
+    def _risk_tier(self) -> str:
+        return (self.state.risk_tier or self.deps.pipeline.get("risk_tier") or "M").upper()
+
+    def _latest_approval(self, gate: str) -> GateDecision | None:
+        latest = [d for d in self.state.gate_history if d.gate == gate]
+        return latest[-1] if latest and latest[-1].approved else None
+
     def _gate(self, gate: str, summary: str, docs: list[str], discard: Callable[[], None]) -> str:
         """Returns '<gate>_approved', '<gate>_rejected' or 'stopped'.
 
-        On rejection, `discard` drops the rejected artifact before the checkpoint, so the
-        next pass (or a resume) rewrites it with the feedback instead of re-asking about it.
+        An approval holds only while the approved documents keep their hashes; a change asks again.
+        Every decision is written to gates/<G>.gate. In async mode the run stops and waits for
+        `uv run approve`. On rejection the drafts are kept in docs/history/ and `discard` drops the
+        rejected artifact, so the next pass (or a resume) rewrites it with the feedback.
         """
         if self.state.status != "running":
             return "stopped"
-        if self.state.gate_approved(gate):
-            return f"{gate}_approved"
-        if not self.deps.pipeline.get("gates", {}).get(gate, True):
+        root, gid = self.deps.workspace.root, gate_files.gate_id(gate)
+        approved = self._latest_approval(gate)
+        if approved:
+            changed = gate_files.changed_since(root, approved.artifact_hashes)
+            if not changed:
+                return f"{gate}_approved"
+            self.state.gate_history.append(GateDecision(
+                gate=gate, gate_id=gid, approved=False, decided_by="system",
+                feedback=f"Changed after approval: {', '.join(changed)}"))
+        hashes = gate_files.file_hashes(root, docs)
+        cfg = self.deps.pipeline.get("gates", {}) or {}
+        if not cfg.get(gate, True):
             decision = GateDecision(gate=gate, approved=True, decided_by="config")
+        elif gate == "architecture" and self._risk_tier == "L" and cfg.get("architecture_waiver_at_tier_l"):
+            decision = GateDecision(gate=gate, approved=True, decided_by="waiver",
+                                    feedback="Design gate waived at risk tier L (pipeline gates.architecture_waiver_at_tier_l)")
         else:
-            decision = request_approval(
-                gate,
-                summary,
-                [self.deps.workspace.root / d for d in docs],
-                gate_mode(self.deps.pipeline.get("gate_mode", "console")),
-                self.deps.input_fn,
-            )
+            mode = gate_mode(self.deps.pipeline.get("gate_mode", "console"),
+                             demo=bool(self.deps.pipeline.get("demo")), risk_tier=self._risk_tier)
+            if mode == "async":
+                decision = gate_files.read_decision(root, gid)
+                if decision is None or decision.artifact_hashes != hashes:
+                    gate_files.write_pending(root, gate, summary, docs, hashes)
+                    self._stop(f"Waiting for {gid} ({gate}): a person approves with "
+                               f"`uv run approve {self.state.run_id} {gid} --as \"Your Name\"`, "
+                               f"then `uv run resume {self.state.run_id}`")
+                    self._checkpoint(f"Gate {gid}: waiting for approval")
+                    return "stopped"
+                gate_files.archive_decision(root, gid)
+            else:
+                decision = request_approval(gate, summary, [root / d for d in docs], mode, self.deps.input_fn)
+        decision.gate_id, decision.artifact_hashes = gid, hashes
+        gate_files.write_decision(root, decision)        # gates/<G>.gate holds the latest decision
         self.state.gate_history.append(decision)
         if decision.approved:
-            self._checkpoint(f"Gate {gate}: approved")
+            self._checkpoint(f"Gate {gid} {gate}: approved")
             return f"{gate}_approved"
+        gate_files.version_documents(root, docs, gate)
         discard()
         limit = self.deps.pipeline.get("limits", {}).get("gate_rejections", 3)
         if len(self.state.rejections(gate)) >= limit:
             self._stop(f"Gate '{gate}' rejected {limit} times")
-            self._checkpoint(f"Gate {gate}: rejected, run stopped")
+            self._checkpoint(f"Gate {gid} {gate}: rejected, run stopped")
             return "stopped"
-        self._checkpoint(f"Gate {gate}: rejected")
+        self._checkpoint(f"Gate {gid} {gate}: rejected")
         return f"{gate}_rejected"
 
     # ---------- flow ----------
@@ -195,7 +265,7 @@ class SDLCFlow(Flow[ProjectState]):
         runner, ws = self.deps.runner, self.deps.workspace
         if self.state.product_brief is None:
             self.state.product_brief = self._record(discovery.expand_brief(runner, self.state.brief))
-            ws.save_artifact("product_brief", self.state.product_brief)
+            ws.save_artifact("product_brief", self.state.product_brief, agent="customer")
             self._checkpoint("Discovery: product brief")
         if not self.state.clarifications:
             max_rounds = self.deps.pipeline.get("limits", {}).get("clarification_rounds", 3)
@@ -221,7 +291,8 @@ class SDLCFlow(Flow[ProjectState]):
                 self._scope,
             )
         )
-        self.deps.workspace.save_artifact("prd", self.state.prd)
+        self.deps.workspace.save_artifact("prd", self.state.prd, agent="business_analyst",
+                                          inputs=["docs/product_brief.md", "docs/clarifications.md"])
         self._checkpoint("Discovery: PRD")
 
     @router(or_(discovery_phase, "revise_prd"))
@@ -254,7 +325,7 @@ class SDLCFlow(Flow[ProjectState]):
                 database=self.deps.profile.database, layout=self.deps.profile.layout_summary(),
             ))
             self.state.architecture = arch
-            ws.save_artifact("architecture", arch)
+            ws.save_artifact("architecture", arch, agent="architect", inputs=["docs/prd.md"])
             ws.write_text("docs/openapi.yaml", arch.openapi_yaml)
             if self.deps.profile.database:
                 ws.write_text("docs/schema.prisma", arch.prisma_schema)
@@ -266,7 +337,8 @@ class SDLCFlow(Flow[ProjectState]):
             self.state.design = self._record(design.design_ui(
                 self.deps.runner, self.state.prd, self.state.architecture, self._scope, notes,
                 agent_guardrails.enabled(self.deps.pipeline)))
-            ws.save_artifact("design_system", self.state.design)
+            ws.save_artifact("design_system", self.state.design, agent="ui_ux_designer",
+                             inputs=["docs/prd.md", "docs/architecture.md"])
             self._checkpoint("Design: design system and screen specs")
         self._write_mockups(notes)
         if (self._phase_enabled("planning") and self.state.backlog is None and self.state.architecture is not None
@@ -275,7 +347,8 @@ class SDLCFlow(Flow[ProjectState]):
                 self.deps.runner, self.state.prd, self.state.architecture, self.state.design,
                 self.deps.profile.stack_summary(), notes, self._scope, layout=self.deps.profile.layout_summary(),
             ))
-            ws.save_artifact("backlog", self.state.backlog)
+            ws.save_artifact("backlog", self.state.backlog, agent="project_manager",
+                             inputs=["docs/prd.md", "docs/architecture.md", "docs/design_system.md"])
             self._checkpoint("Planning: work breakdown and estimates")
         est = estimation.EstimationConfig.from_pipeline(self.deps.pipeline)
         # Only while Gate 2 is open: an approved plan is not re-estimated behind the reviewer's back.
@@ -380,6 +453,10 @@ class SDLCFlow(Flow[ProjectState]):
             self.state.release.smoke_suite = None
             self.state.release.device_suite = None
             self._checkpoint("Release: re-verification needed after new build work")
+        if self._write_blocked() and self.state.status == "running" \
+                and (self.deps.pipeline.get("limits", {}) or {}).get("stop_on_blocked", True):
+            self._stop("Blocked work needs a person: see blocked.md")
+            self._checkpoint("Build: blocked work, run stopped")
         if self.state.status != "running":
             return "stopped"
         return self._after_build()
