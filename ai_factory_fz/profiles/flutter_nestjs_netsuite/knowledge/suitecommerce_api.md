@@ -79,20 +79,12 @@ Cart (VERIFIED). The cart lives in NetSuite per customer and is shared with the 
   "Invalid item reference key 149 for subsidiary 1." (item not sold to this customer's subsidiary).
   Quantities must be >= minimumquantity and a multiple of custitem_f3_incremental_quantity when set.
 
-Checkout (NOT VERIFIED on this site: the sandbox account is sent back to the cart by a site customisation,
-so no checkout call could be observed). Standard SuiteCommerce flow:
-- Update the order: PUT {base}/store/services/LiveOrder.Service.ss?c={c}&n={n}&internalid=cart with the
-  cart object, setting shipaddress and billaddress (address internalids from the address book), shipmethod
-  (one of shipmethods[].internalid, filled once a ship address is set), options.custbody_f3_so_shipdate
-  and options.custbody_f3_so_notes, and paymentmethods [{"type":"invoice","primary":true,
-  "terms":{"internalid": user.paymentterms.internalid},"purchasenumber":"<PO number>"}].
-- Submit: POST to the same LiveOrder.Service.ss URL with the updated order. Expected response includes
-  confirmation {internalid, tranid, confirmationnumber}.
-- Payment is on account terms (invoice) with an optional purchase order number. This site hides card
-  payment; never collect card data in the app.
-- Because submit is unverified, the backend must keep order submission behind the CHECKOUT_SUBMIT_ENABLED
-  environment flag (staging with the mock: true; production: false until a human verifies it against the
-  sandbox). When disabled, the submit endpoint returns 503 with a clear message and the app shows it.
+Checkout: see suitecommerce_checkout.md (verified against this site). The standard SuiteCommerce flow
+does not work here. Payment is on account terms (invoice) with an optional purchase order number; this site
+hides card payment, so never collect card data in the app. Order submission stays behind the
+CHECKOUT_SUBMIT_ENABLED environment flag (staging with the mock: true; production: false until a human has
+verified a submitted order on the site); when it is off, the submit endpoint returns 503
+CHECKOUT_SUBMIT_DISABLED with a clear message and the app shows it.
 
 Not in scope for the first release: the agent "select customer" pricing view, quotes (RFQ/CPQ), saved
 lists, order history, returns, invoices.

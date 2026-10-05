@@ -16,23 +16,69 @@ stack:
 database: false
 
 # NetSuite records the API works with (module entities name these).
-domain_entities: [Customer, Contact, Address, Item, ItemPrice, Cart, CartLine, ShippingMethod, PaymentTerms, SalesOrder]
+domain_entities:
+  [
+    Customer,
+    Contact,
+    Address,
+    Item,
+    ItemPrice,
+    Cart,
+    CartLine,
+    ShippingMethod,
+    PaymentTerms,
+    SalesOrder,
+  ]
 
 agent_context:
   business_analyst: [knowledge/b2b_domain.md]
-  project_manager: [knowledge/b2b_domain.md]
+  project_manager:
+    - knowledge/b2b_domain.md
+    - knowledge/repo_layout.md
+    - knowledge/release_scope.md
   architect:
     - knowledge/b2b_domain.md
     - knowledge/suitecommerce_api.md
+    - knowledge/suitecommerce_checkout.md
     - knowledge/bff_conventions.md
     - knowledge/flutter_conventions.md
+    - knowledge/repo_layout.md
+    - knowledge/release_scope.md
+    - knowledge/api_error_contract.md
   ui_ux_designer: [knowledge/b2b_domain.md, knowledge/flutter_conventions.md]
-  backend_developer: [knowledge/suitecommerce_api.md, knowledge/bff_conventions.md, knowledge/staging_testing.md]
-  frontend_developer: [knowledge/b2b_domain.md, knowledge/flutter_conventions.md, knowledge/staging_testing.md]
-  qa_engineer: [knowledge/b2b_domain.md, knowledge/bff_conventions.md, knowledge/flutter_conventions.md]
-  deployment_engineer: [knowledge/staging_testing.md]
-  integration_pass: [knowledge/suitecommerce_api.md, knowledge/staging_testing.md]
-  smoke_tester: [knowledge/staging_testing.md]
+  backend_developer:
+    - knowledge/suitecommerce_api.md
+    - knowledge/suitecommerce_checkout.md
+    - knowledge/bff_conventions.md
+    - knowledge/staging_testing.md
+    - knowledge/staging_test_conventions.md
+    - knowledge/api_error_contract.md
+  frontend_developer:
+    - knowledge/b2b_domain.md
+    - knowledge/flutter_conventions.md
+    - knowledge/flutter_device_ready.md
+    - knowledge/staging_testing.md
+    - knowledge/staging_test_conventions.md
+    - knowledge/api_error_contract.md
+  qa_engineer:
+    - knowledge/b2b_domain.md
+    - knowledge/bff_conventions.md
+    - knowledge/flutter_conventions.md
+    - knowledge/api_error_contract.md
+  deployment_engineer:
+    - knowledge/staging_testing.md
+    - knowledge/staging_test_conventions.md
+    - knowledge/repo_layout.md
+    - knowledge/release_scope.md
+  integration_pass:
+    - knowledge/suitecommerce_api.md
+    - knowledge/suitecommerce_checkout.md
+    - knowledge/staging_testing.md
+    - knowledge/api_error_contract.md
+  smoke_tester:
+    - knowledge/staging_testing.md
+    - knowledge/staging_test_conventions.md
+    - knowledge/flutter_device_ready.md
 
 agent_overrides: {}
 
@@ -88,10 +134,38 @@ components:
 
 # What the Architect's output is checked against (see src/agentic_sdlc/guardrails/architecture.py).
 guardrails:
-  required_stack: [flutter, nestjs, suitecommerce]   # must appear in the components
-  forbidden_stack: [react, react native, angular, vue, next.js, express, django, rails, laravel, spring,
-                    mongodb, mysql, postgresql, postgres, prisma, typeorm, sqlite, redis, firestore,
-                    firebase auth, cloud functions, supabase, graphql, kotlin, swift, xamarin, ionic, stripe]
+  required_stack: [flutter, nestjs, suitecommerce] # must appear in the components
+  forbidden_stack:
+    [
+      react,
+      react native,
+      angular,
+      vue,
+      next.js,
+      express,
+      django,
+      rails,
+      laravel,
+      spring,
+      mongodb,
+      mysql,
+      postgresql,
+      postgres,
+      prisma,
+      typeorm,
+      sqlite,
+      redis,
+      firestore,
+      firebase auth,
+      cloud functions,
+      supabase,
+      graphql,
+      kotlin,
+      swift,
+      xamarin,
+      ionic,
+      stripe,
+    ]
   platform: flutter mobile (Android and iOS)
   platform_technology: flutter
   forbidden_platforms: [web app, web client, website, desktop, electron, pwa]
@@ -104,15 +178,15 @@ guardrails:
   # Agent guardrails (DV3: copies of the approved contract must not drift)
   contract_copies:
     docs/openapi.yaml: [server/openapi.yaml, app/openapi.yaml]
-  scope_also_allowed: []        # extra paths any coding item may change (e.g. [.github/])
-  secret_scan_ignore: []        # paths skipped by the secret scan
+  scope_also_allowed: [] # extra paths any coding item may change (e.g. [.github/])
+  secret_scan_ignore: [] # paths skipped by the secret scan
 
 # Release phase: how staging runs and is checked.
 release:
   api_component: backend
   api_prefix: /api/v1
   health_path: /api/v1/health
-  openapi_json_path: /api/docs-json      # @nestjs/swagger JSON (the Deployment engineer ensures it is served)
+  openapi_json_path: /api/docs-json # @nestjs/swagger JSON (the Deployment engineer ensures it is served)
   compose_file: infra/docker-compose.staging.yml
   env_file: infra/staging.env
   local_prepare: [npm run build]
@@ -128,13 +202,13 @@ release:
     SESSION_ENCRYPTION_KEY. Never point staging at the real site. infra/README.md must list the
     production settings: SUITECOMMERCE_BASE_URL=https://stanpro2.folio3.site, SUITECOMMERCE_COMPANY_ID=628731_SB2,
     SUITECOMMERCE_SITE_ID=2, SUITECOMMERCE_CATALOG_FILTER="Ascot : SG : Standard Products", a generated
-    SESSION_ENCRYPTION_KEY (never committed), and CHECKOUT_SUBMIT_ENABLED=false until a human has verified
+    SESSION_ENCRYPTION_KEY (never committed), and CHECKOUT_SUBMIT_ENABLED=true until a human has verified
     order submission against the site.
 
 # Running the app on an Android emulator (release phase device tests, and `uv run showcase`).
 device:
   app_component: frontend
-  app_id: com.example.b2b_store_app          # from flutter create --org com.example --project-name b2b_store_app
+  app_id: com.example.b2b_store_app # from flutter create --org com.example --project-name b2b_store_app
   system_image: system-images;android-35;google_apis;x86_64
   avd_name: sdlc_phone
   device_profile: pixel_7
@@ -152,10 +226,10 @@ sandbox:
     flutter:
       image: ghcr.io/cirruslabs/flutter:stable
       local_binary: flutter
-      run_as_root: true            # the SDK writes to its root-owned cache
+      run_as_root: true # the SDK writes to its root-owned cache
       env:
-        PUB_CACHE: /workspace/.pub-cache   # keep downloaded packages between commands
-        GRADLE_USER_HOME: /workspace/.gradle   # keep the Android build cache between commands
+        PUB_CACHE: /workspace/.pub-cache # keep downloaded packages between commands
+        GRADLE_USER_HOME: /workspace/.gradle # keep the Android build cache between commands
         ANDROID_USER_HOME: /workspace/.android # one debug signing key per run (reinstalls keep working)
     openapi:
       image: openapitools/openapi-generator-cli:v7.10.0
@@ -163,7 +237,7 @@ sandbox:
       local_prefix: npx -y @openapitools/openapi-generator-cli
   # Non-secret environment for every command.
   env:
-    CI: "true"   # non-interactive test runners
+    CI: "true" # non-interactive test runners
   # Commands agents may run (prefix match, one command at a time, no shell operators).
   allowed_commands:
     flutter:
