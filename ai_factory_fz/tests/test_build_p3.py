@@ -430,3 +430,15 @@ def test_a_task_refused_the_same_files_twice_stops_with_an_ownership_message(tmp
     p = s.build.item("WI-001")
     assert p.status == "blocked" and p.attempts == 2          # not 6
     assert "needs an ownership change" in p.reason and "server/src/orders/other.ts" in p.reason
+
+
+def test_every_agent_that_writes_files_has_the_write_tool():
+    """On the API path an agent can only write files through fs_write (the Claude Code path hid its absence)."""
+    from agentic_sdlc.settings import load_config
+
+    agents, tasks = load_config("agents"), load_config("tasks")
+    writers = {"implement_work_item", "fix_work_item", "write_acceptance_tests", "write_smoke_tests",
+               "write_device_tests", "deploy_staging"}
+    for key in writers:
+        agent = tasks[key]["agent"]
+        assert "fs_write" in agents[agent]["tools"], f"{agent} runs {key} but has no fs_write"

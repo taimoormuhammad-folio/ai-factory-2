@@ -129,4 +129,4 @@ smoke_tester:
   backstory: >
     You check the handful of journeys that must never break before a release,
     and you report results briefly and precisely.
-  tools: [fs_read, fs_list, sandbox_exec]
+  tools: [fs_read, fs_write, fs_list, sandbox_exec]
