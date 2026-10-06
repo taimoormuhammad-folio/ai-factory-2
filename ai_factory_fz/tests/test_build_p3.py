@@ -414,3 +414,17 @@ def test_a_failing_check_with_a_network_error_is_retried_before_the_agent_sees_i
     b.run()
     assert s.build.item("WI-001").status == "done" and s.build.item("WI-001").attempts == 1
     assert not [j for j in worker.jobs if j.task_key == "fix_work_item"]
+
+
+def test_a_task_refused_the_same_files_twice_stops_with_an_ownership_message(tmp_path, prd, profile):
+    writes = {"implement_work_item": lambda j: {"server/src/orders/other.ts": "x"},
+              "fix_work_item": lambda j: {"server/src/orders/other.ts": "x"}}
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])],
+                              cfg=BuildConfig(milestones=[], guard_rules={"DV1", "DV2", "DV3"}, check_fix_attempts=5))
+    worker = FileWorker(b.ws.root, writes)
+    b.worker_for = lambda agent: worker
+    b.run()
+    p = s.build.item("WI-001")
+    assert p.status == "blocked" and p.attempts == 2          # not 6
+    assert "needs an ownership change" in p.reason and "server/src/orders/other.ts" in p.reason

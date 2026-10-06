@@ -459,6 +459,7 @@ class Builder:
         task_key = first_task
         result = None
         code_rules = self.cfg.guard_rules & set(code_guardrails.CODE_RULES)
+        refused: set[str] = set()        # files the agent was refused (not owned) in the previous attempt
         for attempt in range(1, self.cfg.check_fix_attempts + 2):
             p.attempts += 1
             result = self._work(comp, task_key, self.item_inputs(m, item, comp, problems), self.policy(item, comp))
@@ -484,6 +485,16 @@ class Builder:
                     if code_rules else []
                 )
             if violations:
+                now = {v.split(" is outside the paths", 1)[0].removeprefix("DV3: ") for v in violations
+                       if v.startswith("DV3:") and " is outside the paths" in v}
+                if now and now == refused and all(v.startswith("DV3:") for v in violations):
+                    # The same files again: the task needs them, and no retry can give them to it. The Architect must
+                    # widen the task's owned paths (a plan change), so stop here instead of burning more attempts.
+                    self._discard(item, comp)
+                    return "blocked", result, (
+                        "needs an ownership change: the task keeps needing files it does not own, so the plan must "
+                        "give them to it (Architect: widen `owns`, then re-plan). Files: " + ", ".join(sorted(now)))
+                refused = now
                 output = "\n".join(violations)
                 problems = f"Guardrails rejected your change. Fix all of these:\n{output}"
                 continue
