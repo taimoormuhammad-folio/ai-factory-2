@@ -41,13 +41,33 @@ def test_a_criterion_is_met_only_with_a_passing_run_that_names_it(tmp_path, prd,
     assert "- [ ] I tried it and it is right" in (ws.root / "docs/uat-guide.md").read_text()
 
 
-def test_a_failing_suite_or_a_run_that_does_not_name_the_criterion_proves_nothing(tmp_path, prd, backlog):
+def test_a_failing_suite_or_a_run_that_never_shows_the_file_proves_nothing(tmp_path, prd, backlog):
     a, s, _ = acceptor(tmp_path, prd, backlog, "  ✕ AC-01 lists products\n", exit_code=1)
     a.accept()
     assert "AC-01" in s.release.acceptance_unmet
     a, s, _ = acceptor(tmp_path / "b", prd, backlog, "Tests: 3 passed\n")
     a.accept()
     assert "AC-01" in s.release.acceptance_unmet
+
+
+def test_runners_that_print_files_not_test_names_still_prove_the_criterion(tmp_path, prd, backlog):
+    """vitest's default output: ' ✓ test/acceptance/ac-01.spec.ts (3 tests)'; no per-test names."""
+    a, s, ws = acceptor(tmp_path, prd, backlog, " ✓ test/acceptance/ac-01.spec.ts (3 tests) 231ms\n")
+    a.accept()
+    assert s.release.acceptance_met == ["AC-01"]
+    assert "ac-01.spec.ts" in (ws.root / "evidence/AC-01/result.md").read_text()
+
+
+def test_a_skipped_or_undeclared_test_is_not_proof(tmp_path, prd, backlog):
+    a, s, ws = acceptor(tmp_path, prd, backlog, " ✓ test/acceptance/ac-01.spec.ts (3 tests)\n")
+    code = "it.skip('AC-01 lists products', () => {})"
+    ws.write_text(TEST_FILE, code)
+    s.build.locked_tests = {TEST_FILE: hashlib.sha256(code.encode()).hexdigest()}
+    a.accept()
+    assert "AC-01" in s.release.acceptance_unmet
+    assert "no test declaring AC-01" in (ws.root / "evidence/AC-01/result.md").read_text()
+    assert Acceptor._declared("testWidgets('AC-03 shows total', (t) async {})", "AC-03")
+    assert not Acceptor._declared("test('AC-04 x', () {}, skip: true);", "AC-04")
 
 
 def test_a_changed_locked_test_is_never_proof(tmp_path, prd, backlog):

@@ -116,13 +116,22 @@ class Acceptor:
                 reasons.append(f"{t.file}: the {comp} suite FAILED (exit {info['exit']})" +
                                (f"; environment problem: {broken}" if broken else ""))
                 continue
-            named = [ln.strip() for ln in re.sub(r"\x1b\[[0-9;]*m", "", info["output"]).splitlines() if ac_id.lower() in ln.lower()]
+            src = self.ws.root / t.file
+            code = src.read_text(encoding="utf-8", errors="replace")
+            declared = self._declared(code, ac_id)
+            if not declared:
+                reasons.append(f"{t.file}: no test declaring {ac_id} was found in the file (or it is skipped)")
+                continue
+            # Test runners differ in what they print (a file and a count, or the running test), so the proof is: the
+            # suite passed, the locked file is intact and declares the test, and the run shows this file or this id.
+            base = Path(t.file).name.lower()
+            named = [ln.strip() for ln in re.sub(r"\x1b\[[0-9;]*m", "", info["output"]).splitlines()
+                     if ac_id.lower() in ln.lower() or base in ln.lower()]
             if not named:
-                reasons.append(f"{t.file}: the run's output does not name {ac_id}, so it is not proof")
+                reasons.append(f"{t.file}: the run's output never shows this file or {ac_id}, so it is not proof that it ran")
                 continue
             proven = True
-            src = self.ws.root / t.file
-            self.ws.write_text(str(folder / "tests" / Path(t.file).name), src.read_text(encoding="utf-8", errors="replace"))
+            self.ws.write_text(str(folder / "tests" / Path(t.file).name), code)
             lines_out += [f"[{key}] {ln}" for ln in named[:20]]
         if proven:
             shots = self.s.release.device_screenshots if any(k.endswith("frontend") for k, _ in tests) else []
@@ -138,6 +147,16 @@ class Acceptor:
             return True, ""
         self.ws.write_text(str(folder / "result.md"), f"# {ac_id}: NOT MET\n\n" + "\n".join(f"- {x}" for x in reasons))
         return False, "; ".join(reasons)
+
+    @staticmethod
+    def _declared(code: str, ac_id: str) -> bool:
+        """A real (not skipped) test whose name carries the criterion id."""
+        for m in re.finditer(r"\b(it|test|testWidgets)(\.skip|\.todo)?\s*\(\s*(['\"`])(.*?)\3", code, re.S):
+            if ac_id.lower() in m.group(4).lower() and not m.group(2):
+                tail = code[m.end(): m.end() + 400]
+                if not re.search(r"skip\s*:\s*(true|['\"])", tail.split("\n\n")[0]):
+                    return True
+        return False
 
     # ---------- documents ----------
 
