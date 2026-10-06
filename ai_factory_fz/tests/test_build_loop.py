@@ -126,13 +126,25 @@ def test_item_fails_after_attempts_and_dependents_are_blocked(tmp_path, prd, pro
     sandbox = FakeSandbox(check_results=[fail] * 10)
     items = [item("WI-001"), item("WI-002", deps=["WI-001"])]
     b, s, _, _ = make_builder(tmp_path, prd, profile, items, [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001", "WI-002"])],
-                              sandbox=sandbox, cfg=BuildConfig(milestones=[], check_fix_attempts=1))
+                              sandbox=sandbox, cfg=BuildConfig(milestones=[], check_fix_attempts=1, stop_on_failed=False))
     b.run()
     assert s.build.item("WI-001").status == "failed"
     assert s.build.item("WI-001").attempts == 2
     assert s.build.item("WI-002").status == "blocked"
     assert "depends on WI-001, which is failed" in s.build.item("WI-002").reason
     assert s.build.milestone("M1").status == "partial"
+
+
+def test_a_failed_item_stops_the_run_before_more_is_built_on_it(tmp_path, prd, profile):
+    fail = SandboxResult(exit_code=1, output="boom")
+    sandbox = FakeSandbox(check_results=[fail] * 10)
+    items = [item("WI-001"), item("WI-002", deps=["WI-001"])]
+    b, s, _, worker = make_builder(tmp_path, prd, profile, items, [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001", "WI-002"]),
+                                                                  Milestone(id="M2", name="n", goal="g", work_item_ids=[])],
+                                   sandbox=sandbox, cfg=BuildConfig(milestones=[], check_fix_attempts=1))
+    b.run()
+    assert s.status == "stopped" and "WI-001 failed" in s.stop_reason and "resume" in s.stop_reason
+    assert not [j for j in worker.jobs if j.task_key == "qa_milestone"]      # no QA on half a milestone
 
 
 def test_missing_toolchain_blocks_items_but_not_the_run(tmp_path, prd, profile):

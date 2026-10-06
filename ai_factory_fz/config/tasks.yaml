@@ -223,6 +223,12 @@ implement_work_item:
     - ui-design.md and ui/: screens, design tokens and the approved screen prototypes (mobile work).
     - The project conventions in your instructions.
 
+    Locked acceptance tests (written before the build; you cannot change them, and they define the
+    names they need: the app's root widget and package imports, widget Keys, helper hooks). Read the
+    ones for your component FIRST and build exactly those names so they compile and pass when the
+    milestone is finished. Files:
+    {acceptance_files}
+
     Rules:
     - Implement only this work item, completely. No placeholders or TODOs for the core behaviour.
     - Add focused tests for the behaviour you add.
@@ -253,6 +259,7 @@ fix_work_item:
     {tooling}
 
     The API contract and design documents are in {docs_dir} (read-only).
+    Locked acceptance tests (read-only; they define the names and behaviour to build): {acceptance_files}
     Fix the root cause with the smallest correct change, keep existing tests passing, and make
     sure these checks pass: {checks}.
   expected_output: A report of what you changed and whether the checks pass.
@@ -311,6 +318,11 @@ write_acceptance_tests:
       Key for the app. Use the contract's exact paths, fields and status codes.
     - Never write application code, stubs or fakes of the code under test: the tests must fail now,
       because the feature is not built yet. The pipeline runs `{command}` and requires it to fail.
+    - The builders cannot change these tests, and they read them first. So put everything the tests
+      need from the app in ONE file, {folder}/support/contract.md (or contract.dart / contract.ts for
+      constants): the root widget or module and where it is imported from, the package name, every
+      widget Key or selector, the environment variables, the HTTP base-URL hook, and any provider
+      override. Prefer names the UI design (ui-design.md) already uses.
     - If a criterion cannot be tested as written, set blocked and say why instead of guessing.
   expected_output: The tests written, each with its criterion id, file and test name.
 

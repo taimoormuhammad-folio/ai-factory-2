@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 
 class AcceptanceTest(BaseModel):
     ac_id: str = Field(description="The acceptance criterion this test proves, e.g. AC-07")
-    file: str = Field(description="Test file path relative to the project root, e.g. server/test/acceptance/ac-07.e2e-spec.ts")
+    file: str = Field(description="Test file path from the run folder (the folder that contains server/ and app/), "
+                                  "e.g. server/test/acceptance/ac-07.e2e-spec.ts or app/test/acceptance/ac_07_test.dart")
     test_name: str = Field(description="The test's name as written in the file (contains the AC id)")
     how: str = Field(default="", description="One line: what the test does and checks")
 

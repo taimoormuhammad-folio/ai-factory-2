@@ -445,15 +445,18 @@ class SDLCFlow(Flow[ProjectState]):
         viewport = tuple(cfg.get("viewport", mockup_kit.DEFAULT_VIEWPORT))
         limit = cfg.get("max_states_per_screen", 4)
         done = {m.screen_id for m in self.state.mockups}
+        drew = False
         for screen in spec.screens:
             if screen.id in done or not self._can_continue():
                 continue
+            drew = True
             states = mockup_kit.states_to_draw(screen, wanted, limit)
             self.state.mockups.append(self._record(design.design_mockups(self.deps.runner, spec, screen, states, notes,
                                                                          prd=self.state.prd)))
             self._checkpoint(f"Design: mockups {screen.id}")
-        if {m.screen_id for m in self.state.mockups} >= {s.id for s in spec.screens}:
-            ws = self.deps.workspace
+        ws = self.deps.workspace
+        if {m.screen_id for m in self.state.mockups} >= {s.id for s in spec.screens} \
+                and (drew or not (ws.root / mockup_kit.MOCKUP_DIR / "index.html").exists()):
             shutil.rmtree(ws.root / mockup_kit.MOCKUP_DIR, ignore_errors=True)   # drop pages of a rejected design
             counts = mockup_kit.write_mockups(ws, spec, self.state.mockups, viewport)
             if counts["pages"] and not counts["pngs"]:

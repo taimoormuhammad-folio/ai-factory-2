@@ -158,6 +158,11 @@ def test_smoke_failure_goes_to_developer_then_passes(tmp_path, prd, backlog):
     r.verify()
     assert s.release.verified and s.release.rounds == 2
     fix = [j for j in worker.jobs if j.task_key == "fix_work_item"][0]
+    import re
+
+    from agentic_sdlc.settings import load_config
+    needed = set(re.findall(r"\{(\w+)\}", load_config("tasks")["fix_work_item"]["description"])) - {"tooling"}   # tooling: the worker's
+    assert needed <= set(fix.inputs), f"fix_work_item prompt needs {sorted(needed - set(fix.inputs))} from the release phase"
     assert fix.agent_key == "backend_developer" and "expected 201 got 500" in fix.inputs["problems"]
 
 

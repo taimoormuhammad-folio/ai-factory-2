@@ -49,8 +49,8 @@ def discard_changes(ws: Workspace, workdir: str) -> None:
     """Throw away uncommitted changes under a folder (e.g. a failed or rejected work item)."""
     repo = Repo(ws.root)
     target = "." if workdir in (".", "") else workdir
-    if repo.head.is_valid():
-        repo.git.checkout("HEAD", "--", target)
+    if repo.head.is_valid() and repo.git.ls_files("--", target).strip():   # a folder with nothing committed yet
+        repo.git.checkout("HEAD", "--", target)                             # has nothing to restore
     repo.git.clean("-fdq", "--", target)
 
 

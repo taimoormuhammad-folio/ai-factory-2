@@ -126,8 +126,10 @@ class Workspace:
             if paths is None:
                 repo.git.add(A=True)
             else:
-                existing = [p for p in dict.fromkeys(paths) if p and (self.root / p).exists()]
-                tracked_gone = [p for p in dict.fromkeys(paths) if p and not (self.root / p).exists()
+                wanted = [p for p in dict.fromkeys(paths) if p]
+                ignored = set(repo.ignored(*wanted)) if wanted else set()      # git refuses to add ignored paths
+                existing = [p for p in wanted if (self.root / p).exists() and p not in ignored]
+                tracked_gone = [p for p in wanted if not (self.root / p).exists()
                                 and repo.head.is_valid() and repo.git.ls_files("--", p)]
                 if existing or tracked_gone:
                     repo.git.add("-A", "--", *existing, *tracked_gone)

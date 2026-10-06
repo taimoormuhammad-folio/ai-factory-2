@@ -237,3 +237,109 @@ def test_claude_code_worker_runs_the_guard_as_a_pretooluse_hook(tmp_path):
     no_policy = worker.build_command(Job("build", "backend_developer", "t", {}, WorkItemResult, "server", "node"),
                                      "m", "s", "p")
     assert "--settings" not in no_policy
+
+
+# ---------- environment failures and the throwaway database ----------
+
+def test_environment_failures_are_told_apart_from_missing_features():
+    from agentic_sdlc.build.services import environment_failure
+
+    assert "Can't reach database server" in environment_failure(
+        "PrismaClientInitializationError:\nCan't reach database server at `localhost:5432`")
+    assert environment_failure("connect ECONNREFUSED 127.0.0.1:5432")
+    assert "No devices are connected" in environment_failure(          # Flutter's integration_test/ needs a device
+        "No supported devices connected.\nNo devices are connected. Ensure that `flutter doctor` shows one")
+    assert environment_failure("AssertionError: expected 404 to be 200") is None
+    assert environment_failure("") is None
+
+
+def test_a_suite_that_fails_for_the_environment_is_sent_back_not_locked(tmp_path, prd, profile):
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    broken = SandboxResult(exit_code=1, output="Can't reach database server at `localhost:5432`")
+    sandbox.results_for["npm run test:acceptance"] = [broken, broken]
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True))
+    worker = FileWorker(b.ws.root, ACCEPTANCE_FILE, suite_for)
+    b.worker_for = lambda agent: worker
+    b.run()
+    assert s.status == "stopped" and not s.build.locked_tests
+    assert "fails because of the environment, not because the feature is missing" in worker.jobs[1].feedback
+
+
+def test_the_suite_runs_inside_the_throwaway_database(tmp_path, prd, profile, monkeypatch):
+    import contextlib
+
+    from agentic_sdlc.build import loop
+    from agentic_sdlc.registry.profiles import AcceptanceDatabase
+
+    seen = []
+
+    @contextlib.contextmanager
+    def fake_db(sandbox, db):
+        seen.append(db)
+        yield {"DATABASE_URL": "postgresql://app:app@localhost:40000/app"}
+
+    monkeypatch.setattr(loop, "acceptance_database", fake_db)
+
+    class Sandbox(FakeSandbox):
+        def run_trusted(self, runtime, workdir, command, env=None, host_network=False, timeout_s=None):
+            self.commands.append((command, dict(env or {}), host_network))
+            return SandboxResult(exit_code=0, output="ok")
+
+    profile = with_acceptance(profile)
+    comps = dict(profile.components)
+    comps["backend"] = comps["backend"].model_copy(update={"acceptance": comps["backend"].acceptance.model_copy(
+        update={"database": AcceptanceDatabase(prepare=["npx prisma db push"])})})
+    profile = profile.model_copy(update={"components": comps})
+    sandbox = Sandbox()
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")], M1[:0] or
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox)
+    b.s.build.locked_tests["server/test/acceptance/ac-01.spec.ts"] = "x"
+    b.ws.write_text("server/test/acceptance/ac-01.spec.ts", "x")
+    result = b.run_acceptance(b.s.backlog.milestones[0])
+    ran = [c for c in sandbox.commands if c[0] in ("npx prisma db push", "npm run test:acceptance")]
+    assert [c[0] for c in ran] == ["npx prisma db push", "npm run test:acceptance"]
+    assert all(c[1] == {"DATABASE_URL": "postgresql://app:app@localhost:40000/app"} and c[2] is True for c in ran)
+    assert "backend: `npm run test:acceptance` FAILED" in result or "PASSED" in result
+
+
+def test_test_paths_listed_from_the_component_folder_are_accepted(tmp_path, prd, profile):
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    sandbox.results_for["npm run test:acceptance"] = [SandboxResult(exit_code=1, output="expected 404 to be 201")]
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True))
+    from_server = AcceptanceSuite(tests=[AcceptanceTest(ac_id="AC-01", file="test/acceptance/ac-01.spec.ts",
+                                                        test_name="AC-01 lists products")])
+    worker = FileWorker(b.ws.root, ACCEPTANCE_FILE, from_server)       # the file sits in server/test/acceptance/
+    b.worker_for = lambda agent: worker
+    b.run()
+    assert s.build.acceptance["M1/backend"].tests[0].file == "server/test/acceptance/ac-01.spec.ts"
+    assert list(s.build.locked_tests) == ["server/test/acceptance/ac-01.spec.ts"]
+
+
+def test_an_agent_that_reports_denied_shell_access_is_not_treated_as_blocked():
+    from agentic_sdlc.build.loop import _agent_sandbox_block_is_retryable as retry
+
+    assert retry("Bash permission is denied in this session (don't-ask mode). Nothing was implemented.")
+    assert retry("Command execution is blocked")
+    assert not retry("The spec does not say which currency to use")
+
+
+def test_builders_are_told_which_locked_tests_to_read_first(tmp_path, prd, profile):
+    profile = with_acceptance(profile)
+    b, s, _, worker = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                                   [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])])
+    s.build.locked_tests["server/test/acceptance/ac-01.spec.ts"] = "x"
+    s.build.locked_tests["app/acceptance_test/ac_01_test.dart"] = "y"
+    b.run()
+    given = worker.jobs[0].inputs["acceptance_files"]
+    assert given == "- server/test/acceptance/ac-01.spec.ts"                 # only this component's tests
+    from agentic_sdlc.settings import load_config
+    import re
+    for key in ("implement_work_item", "fix_work_item"):
+        needed = set(re.findall(r"\{(\w+)\}", load_config("tasks")[key]["description"]))
+        assert "acceptance_files" in needed and needed - {"tooling"} <= set(given_inputs := worker.jobs[0].inputs), key

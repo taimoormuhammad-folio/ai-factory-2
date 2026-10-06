@@ -151,7 +151,10 @@ class _CodeShellWorker:
         if cmds:
             text += (
                 f" Run these commands {shell_hint}, from your working directory, one command at a time "
-                f"(no cd, &&, pipes or redirects): " + "; ".join(cmds) + "."
+                f"(no cd, &&, pipes or redirects): " + "; ".join(cmds) + ". "
+                "If a command is denied or fails to start, do not stop and do not report the task as blocked: "
+                "write the code and tests anyway. The pipeline runs the build, the tests and the task's verify "
+                "command for you after you finish and sends you their output to fix."
             )
         else:
             text += " You cannot run commands; the build and tests are run for you after you finish."

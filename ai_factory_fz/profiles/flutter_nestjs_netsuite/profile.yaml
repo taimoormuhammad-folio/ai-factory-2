@@ -114,10 +114,18 @@ components:
     agent: frontend_developer
     workdir: app
     runtime: flutter
-    checks: [flutter analyze, flutter test]
+    # Analyze only the app's own code: the locked acceptance tests (acceptance_test/) import code that later tasks write.
+    checks: [flutter analyze lib test, flutter test]
     acceptance:
-      dir: app/test/acceptance
-      command: flutter test test/acceptance
+      # Outside test/: the task checks (`flutter test`) must not run these locked tests, which fail until the
+      # milestone's screens exist. They run at the end of the milestone, before QA. Not named integration_test:
+      # Flutter runs that folder on a device, and there is none.
+      dir: app/acceptance_test
+      command: flutter test acceptance_test
+      note: >
+        Widget tests (flutter_test, testWidgets) found by Key, run on the Dart VM; no device is needed. Put shared
+        helpers in a support/ folder next to the tests. Keep this folder out of test/ so the normal checks do not
+        run it, and do not move it under integration_test/ (that needs a device).
     scaffold:
       # Change the organisation (Android application id / iOS bundle id) before a store release.
       - run: flutter create --org com.example --project-name b2b_store_app --platforms android,ios app

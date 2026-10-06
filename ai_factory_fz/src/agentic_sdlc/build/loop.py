@@ -34,12 +34,13 @@ from agentic_sdlc.artifacts.tests import AcceptanceSuite, test_plan_markdown
 from agentic_sdlc.artifacts.wbs import _prefix as owned_prefix
 from agentic_sdlc.build.coders import Job, Worker
 from agentic_sdlc.build.scaffold import ScaffoldError, required_runtimes, scaffold
+from agentic_sdlc.build.services import ServiceError, acceptance_database, environment_failure
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import code as code_guardrails
 from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
 from agentic_sdlc.registry.profiles import Component, Profile
 from agentic_sdlc.state import ProjectState
-from agentic_sdlc.tools.sandbox_exec import SandboxRejected, SandboxRunner
+from agentic_sdlc.tools.sandbox_exec import SandboxRejected, SandboxResult, SandboxRunner
 from agentic_sdlc.workspace import Workspace
 from agentic_sdlc.workspace_layout import component_workdir
 
@@ -50,6 +51,12 @@ _SANDBOX_BLOCK_MARKERS = (
     "command execution is blocked",
     "shell/sandbox command invocations are rejected",
     "could not be run to verify",
+    "permission is denied",
+    "permission was denied",
+    "bash is denied",
+    "don't-ask mode",
+    "dontask mode",
+    "not allowed to run",
 )
 
 
@@ -65,6 +72,7 @@ class BuildConfig:
     check_fix_attempts: int = 2
     qa_fix_rounds: int = 3
     guard_rules: set[str] = field(default_factory=set)   # agent guardrails on (DV*, QA*)
+    stop_on_failed: bool = True      # a work item that failed for good stops the run (a person must look)
     acceptance_tests: bool = False   # Test Writer writes locked acceptance tests before each milestone
     parallel: bool = False           # backend and frontend lanes build at the same time
 
@@ -78,6 +86,7 @@ class BuildConfig:
             check_fix_attempts=b.get("check_fix_attempts", 2),
             qa_fix_rounds=pipeline.get("limits", {}).get("qa_fix_rounds", 3),
             guard_rules=agent_guardrails.enabled(pipeline),
+            stop_on_failed=bool(b.get("stop_on_failed", True)),
             acceptance_tests=bool(b.get("acceptance_tests", False)),
             parallel=bool(b.get("parallel", False)),
         )
@@ -209,6 +218,13 @@ class Builder:
                     self.build_item(m, item)
             newly_done = any(self.s.build.item(i.id).status == "done" and i.id not in before for i in items)
             if not self.can_continue():
+                return
+            failed = [i for i in items if self.s.build.item(i.id).status == "failed"]
+            if failed and self.cfg.stop_on_failed:
+                # A task that failed after its fix attempts needs a person: building on it only produces blocked work.
+                self._save(f"Build: {m.id} has failed work")
+                self.stop(f"{m.id}: " + "; ".join(f"{i.id} failed ({self.s.build.item(i.id).reason[:160]})" for i in failed)
+                          + ". Fix the cause (see reports/ and the task's attempts) and resume.")
                 return
             if mp.status == "todo" or newly_done or mp.status == "failed":
                 self._acceptance_text[m.id] = self.run_acceptance(m)
@@ -354,7 +370,15 @@ class Builder:
             "docs_dir": str(self.ws.root / "docs"),
             "checks": "; ".join(comp.checks) or "(none)",
             "problems": problems or "(none)",
+            "acceptance_files": self.acceptance_files(item.component),
         }
+
+    def acceptance_files(self, component: str) -> str:
+        """The locked acceptance test files of a component (builders must read them: they fix the names)."""
+        comp = self.profile.components.get(component)
+        folder = (comp.acceptance.dir.rstrip("/") + "/") if comp and comp.acceptance else None
+        files = sorted(p for p in self.s.build.locked_tests if folder and p.startswith(folder))
+        return "\n".join(f"- {p}" for p in files) or "(none for this component yet)"
 
     def build_item(self, m: Milestone, item: WorkItem) -> None:
         p = self.s.build.item(item.id)
@@ -518,6 +542,7 @@ class Builder:
             policy = {"owns": [acc.dir], "workdir": comp.workdir, "locked": sorted(self.s.build.locked_tests),
                       "also_allowed": ["reports/"]}
             feedback = ""
+            code_guardrails.discard_changes(self.ws, acc.dir)       # no leftovers of an interrupted earlier attempt
             for attempt in (1, 2):
                 job = Job(PHASE, "test_writer", "write_acceptance_tests", inputs, AcceptanceSuite, comp.workdir,
                           comp.runtime, feedback=feedback, policy=policy)
@@ -533,21 +558,34 @@ class Builder:
                     self.stop(f"Test Writer blocked on {key}: {suite.blocked_reason or 'no reason given'} "
                               "(answer it, then resume)")
                     return
+                for t in suite.tests:           # agents work inside the component folder and often list paths from there
+                    if not (self.ws.root / t.file).is_file() and (self.ws.root / comp.workdir / t.file).is_file():
+                        t.file = f"{comp.workdir.rstrip('/')}/{t.file}"
                 problems = suite.errors(ac_ids, acc.dir)
                 problems += [f"{t.file} does not exist" for t in suite.tests if not (self.ws.root / t.file).is_file()]
                 with self._git:
                     problems += code_guardrails.check_changes(self.ws, comp, self.profile, {"DV2", "DV3"}, owns=[acc.dir],
                                                               locked=self.s.build.locked_tests)
                 if not problems:
-                    run = self.sandbox.run_trusted(comp.runtime, comp.workdir, acc.command)
+                    try:
+                        run = self.run_suite(comp, acc)
+                    except ServiceError as e:
+                        self.stop(f"Acceptance setup for {key} failed: {e}")
+                        return
+                    broken = environment_failure(run.output) if not run.ok else None
                     if run.ok:
                         problems = [f"`{acc.command}` passes before the feature is built, so the tests prove nothing; "
                                     "make each test check the criterion's real behaviour"]
+                    elif broken:
+                        problems = [f"`{acc.command}` fails because of the environment, not because the feature is "
+                                    f"missing ({broken}). The tests must fail only for missing behaviour: fix the test "
+                                    "setup (imports, helpers, scripts) so they reach the app"]
                     else:
                         self.ws.write_text(f"reports/acceptance_{m.id}_{name}_before.txt", run.output[-20000:])
                 if not problems:
                     break
                 feedback = "\n".join(problems)
+                self.ws.write_text(f"reports/acceptance_{m.id}_{name}_attempt{attempt}_rejected.txt", feedback + "\n")
                 code_guardrails.discard_changes(self.ws, acc.dir)
             else:
                 self.stop(f"Acceptance tests for {key} are not usable after 2 attempts: {feedback[:500]}")
@@ -558,6 +596,16 @@ class Builder:
             self.ws.commit(f"Tests: {len(locked)} locked acceptance test file(s) for {key} (test_writer)",
                            [comp.workdir, "tests.lock", "docs", "reports"])
             self._save(f"Tests: {key} written and locked")
+
+    def run_suite(self, comp: Component, acc) -> SandboxResult:
+        """Run a component's acceptance suite, inside its throwaway services (e.g. a PostgreSQL)."""
+        with acceptance_database(self.sandbox, acc.database) as env:
+            host = bool(env)             # the database listens on the host's localhost
+            for command in (acc.database.prepare if acc.database else []):
+                prep = self.sandbox.run_trusted(comp.runtime, comp.workdir, command, env=env, host_network=host)
+                if not prep.ok:
+                    raise ServiceError(f"`{command}` failed: {prep.output[-400:]}")
+            return self.sandbox.run_trusted(comp.runtime, comp.workdir, acc.command, env=env, host_network=host)
 
     def run_acceptance(self, m: Milestone) -> str:
         """Run every locked acceptance suite of the milestone's components; the result goes to QA."""
@@ -571,7 +619,11 @@ class Builder:
             changed = [p for p, h in self.s.build.locked_tests.items() if p.startswith(acc.dir.rstrip("/") + "/")
                        and (not (self.ws.root / p).is_file()
                             or hashlib.sha256((self.ws.root / p).read_bytes()).hexdigest() != h)]
-            run = self.sandbox.run_trusted(comp.runtime, comp.workdir, acc.command)
+            try:
+                run = self.run_suite(comp, acc)
+            except ServiceError as e:
+                lines.append(f"- {name}: the acceptance suite could not run: {e}")
+                continue
             report = f"reports/acceptance_{m.id}_{name}.txt"
             self.ws.write_text(report, f"$ {acc.command}\nexit {run.exit_code}\n\n{run.output[-20000:]}")
             verdict = "PASSED" if run.ok else f"FAILED (exit {run.exit_code})"

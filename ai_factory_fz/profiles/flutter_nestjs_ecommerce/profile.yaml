@@ -44,7 +44,16 @@ components:
     acceptance:
       dir: server/test/acceptance
       command: npm run test:acceptance
-      note: Add an npm script "test:acceptance" to server/package.json that runs only this folder with the project's test runner.
+      note: >
+        Add an npm script "test:acceptance" to server/package.json that runs only this folder with the
+        project's test runner. The pipeline runs the suite against a real, empty PostgreSQL (DATABASE_URL is
+        set, the schema is created from prisma/schema.prisma with `prisma db push`) that exists only while the
+        suite runs, so you cannot run it yourself and must not mock the database: create the data each test needs
+        through PrismaClient and drive the app through HTTP. The tests fail until the feature is built, and
+        only because the feature is missing (an unreachable database or a broken test setup is rejected).
+      database:
+        prepare:
+          - npx prisma db push --skip-generate --accept-data-loss
     scaffold:
       # Keep the @nestjs/* majors in step with the CLI major.
       - run: npx -y @nestjs/cli@12 new server --package-manager npm --skip-git --strict
@@ -65,10 +74,18 @@ components:
     agent: frontend_developer
     workdir: app
     runtime: flutter
-    checks: [flutter analyze, flutter test]
+    # Analyze only the app's own code: the locked acceptance tests (acceptance_test/) import code that later tasks write.
+    checks: [flutter analyze lib test, flutter test]
     acceptance:
-      dir: app/test/acceptance
-      command: flutter test test/acceptance
+      # Outside test/: the task checks (`flutter test`) must not run these locked tests, which fail until the
+      # milestone's screens exist. They run at the end of the milestone, before QA. Not named integration_test:
+      # Flutter runs that folder on a device, and there is none.
+      dir: app/acceptance_test
+      command: flutter test acceptance_test
+      note: >
+        Widget tests (flutter_test, testWidgets) found by Key, run on the Dart VM; no device is needed. Put shared
+        helpers in a support/ folder next to the tests. Keep this folder out of test/ so the normal checks do not
+        run it, and do not move it under integration_test/ (that needs a device).
     scaffold:
       - run: flutter create --org com.shopease --project-name shopease_app --platforms android,ios app
         creates: app/pubspec.yaml

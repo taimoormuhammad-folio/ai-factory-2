@@ -158,3 +158,10 @@ def test_rules_are_chosen_per_pipeline():
     assert ag.enabled({"guardrails": {"agents": ["DV1"]}}) == {"DV1"}
     with pytest.raises(ValueError, match="XX1"):
         ag.enabled({"guardrails": {"agents": ["XX1"]}})
+
+
+def test_discard_changes_in_a_folder_git_does_not_know_yet(ws):
+    ws.write_text("app/test/acceptance/a_test.dart", "x\n")       # new, untracked, nothing committed under app/test
+    cg.discard_changes(ws, "app/test/acceptance")
+    assert not (ws.root / "app/test/acceptance/a_test.dart").exists()
+    cg.discard_changes(ws, "app/never/existed")                   # and one that does not exist at all

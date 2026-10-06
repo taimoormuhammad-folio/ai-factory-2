@@ -19,6 +19,14 @@ guardrails:
   # (Deployment engineer); ST1 real smoke/device suites (Smoke tester).
   agents: [DV1, DV2, DV3, QA1, QA2, DE1, ST1]
 
+design:
+  # UI/UX designer draws a mockup of each screen state (docs/ui/: HTML pages, PNGs, index.html gallery
+  # shown at the UI gate, G4). PNGs need Chrome or Chromium; without it only the HTML pages are written.
+  mockups: true
+  mockup_states: [success, loading, error, empty]   # kinds of states to draw, matched to each screen's spec
+  max_states_per_screen: 4
+  viewport: [390, 844]
+
 build:
   # Test Writer writes acceptance tests per milestone before the build; they must fail first, then
   # they are locked (tests.lock) and builders may not change them.

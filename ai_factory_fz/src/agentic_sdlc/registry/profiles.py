@@ -34,11 +34,23 @@ class ScaffoldStep(BaseModel):
     creates: str | None = None           # skip the step if this path already exists
 
 
+class AcceptanceDatabase(BaseModel):
+    """A throwaway PostgreSQL the acceptance suite runs against (started by the pipeline, see build/services.py)."""
+    image: str = "postgres:16"
+    user: str = "app"
+    password: str = "app"
+    name: str = "app"
+    env_var: str = "DATABASE_URL"
+    url: str = "postgresql://{user}:{password}@localhost:{port}/{name}?schema=public"
+    prepare: list[str] = Field(default_factory=list)   # commands run before the suite, e.g. prisma db push
+
+
 class AcceptanceTests(BaseModel):
     """Where the Test Writer puts a component's locked acceptance tests and how they run (in the workdir)."""
     dir: str                             # e.g. server/test/acceptance (relative to the run folder)
     command: str                         # e.g. npm run test:acceptance
     note: str = ""                       # extra instruction for the Test Writer (e.g. add the npm script)
+    database: AcceptanceDatabase | None = None
 
 
 class Component(BaseModel):

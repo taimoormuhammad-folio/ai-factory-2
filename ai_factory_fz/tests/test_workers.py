@@ -53,7 +53,8 @@ def setup(tmp_path, mode, backend=Backend.CLAUDE_CODE):
 def job():
     return Job("build", "backend_developer", "implement_work_item",
                {"item_id": "WI-005", "item_title": "Sign up", "item_description": "d", "component": "backend",
-                "milestone": "M2", "stories": "s", "done_items": "-", "docs_dir": "/x", "checks": "npm test", "problems": "(none)"},
+                "milestone": "M2", "stories": "s", "done_items": "-", "docs_dir": "/x", "checks": "npm test", "problems": "(none)",
+                "acceptance_files": "(none)"},
                WorkItemResult, "server", "node")
 
 

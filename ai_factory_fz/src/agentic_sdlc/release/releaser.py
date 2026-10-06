@@ -421,6 +421,12 @@ class Releaser:
             self.fix(message, component)
         self.r.open_problems = []
 
+    def acceptance_files(self, comp) -> str:
+        """The component's locked acceptance tests (read-only for the fixer)."""
+        folder = (comp.acceptance.dir.rstrip("/") + "/") if comp.acceptance else None
+        files = sorted(p for p in self.s.build.locked_tests if folder and p.startswith(folder))
+        return "\n".join(f"- {p}" for p in files) or "(none for this component)"
+
     def fix(self, problems: str, component: str | None = None) -> None:
         """Send problems to the developer of the component they belong to (default: the API)."""
         component = component or self.profile.release.api_component
@@ -429,11 +435,12 @@ class Releaser:
             "item_id": "RELEASE", "item_title": "Release verification fixes", "component": component,
             "item_description": "Fix problems found while running the system on staging.",
             "milestone": "Release", "stories": "(see the problems)", "checks": "; ".join(comp.checks) or "(none)",
-            "problems": problems, "done_items": self.built_summary(),
+            "problems": problems, "done_items": self.built_summary(), "acceptance_files": self.acceptance_files(comp),
         }
         code_rules = self._code_rules()
+        locked = self.s.build.locked_tests
         result = self._guarded(comp.agent, "fix_work_item", inputs, WorkItemResult, comp.workdir, comp.runtime,
-                               lambda _r: code_guardrails.check_changes(self.ws, comp, self.profile, code_rules)
+                               lambda _r: code_guardrails.check_changes(self.ws, comp, self.profile, code_rules, locked=locked)
                                if code_rules else [], f"The {component} fix")
         if result is not None:
             self.ws.commit(f"Release: fixes from staging verification ({comp.agent})")

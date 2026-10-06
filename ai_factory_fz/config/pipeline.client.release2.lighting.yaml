@@ -30,6 +30,14 @@ guardrails:
   architect: [A1, A2, B1, B2, B3, B4, B5, B6, C1, C2, C3, D1, D2, D3, D4]
   agents: [DV1, DV2, DV3, QA1, QA2, DE1, ST1]
 
+design:
+  # UI/UX designer draws a mockup of each screen state (docs/ui/: HTML pages, PNGs, index.html gallery
+  # shown at the UI gate, G4). PNGs need Chrome or Chromium; without it only the HTML pages are written.
+  mockups: true
+  mockup_states: [success, loading, error, empty]   # kinds of states to draw, matched to each screen's spec
+  max_states_per_screen: 4
+  viewport: [390, 844]
+
 build:
   # Test Writer writes acceptance tests per milestone before the build; they must fail first, then
   # they are locked (tests.lock) and builders may not change them.
