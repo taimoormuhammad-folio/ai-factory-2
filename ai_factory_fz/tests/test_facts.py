@@ -58,3 +58,20 @@ def test_the_test_writing_jobs_receive_the_facts(tmp_path, prd, backlog):
                r.api.workdir, "api", lambda _r: [], "smoke")
     job = [j for j in worker.jobs if j.task_key == "write_smoke_tests"][0]
     assert "Key('cart-total')" in job.inputs["facts"]
+
+
+def test_a_mocks_fixture_records_are_listed_and_only_demo_passwords_are_shown(tmp_path):
+    (tmp_path / "fx").mkdir()
+    (tmp_path / "fx/items.json").write_text('{"items": [{"internalid": 93, "itemid": "CIELO", "displayname": "Step light", "price": {"a": 1}}]}')
+    (tmp_path / "fx/customer.json").write_text(
+        '{"_comment": "Made-up demo customer", "users": [{"email": "buyer@example.com", "password": "demo-password-1"}]}')
+    (tmp_path / "fx/real.json").write_text('{"users": [{"email": "owner@corp.example", "password": "hunter2"}]}')
+    lines = "\n".join(facts.fixture_records(tmp_path, ["fx/*.json"]))
+    assert "internalid 93, itemid CIELO, displayname Step light" in lines and "price" not in lines
+    assert "password demo-password-1 (made-up demo account)" in lines
+    assert "owner@corp.example" in lines and "hunter2" not in lines          # not labelled as demo data: no password
+
+
+def test_the_netsuite_profile_points_the_facts_at_the_mock_fixtures():
+    p = Profile.load("flutter_nestjs_netsuite")
+    assert p.guardrails["facts"]["fixtures"] == ["infra/suitecommerce-mock/fixtures/*.json"]

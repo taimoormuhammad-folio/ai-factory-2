@@ -43,6 +43,36 @@ def seed_records(root: Path, globs: list[str]) -> list[tuple[str, str, str]]:
     return out
 
 
+SCALARS = ("internalid", "id", "itemid", "sku", "name", "displayname", "email")
+
+
+def fixture_records(root: Path, globs: list[str], limit: int = 12) -> list[str]:
+    """Lines for the records in JSON fixture files (a mock server's data): the ids and names tests may rely on. A
+    password is listed only when the file says its account is made-up demo data."""
+    import json
+
+    lines: list[str] = []
+    for p in _files(root, globs):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        demo = any(w in str(data.get("_comment", "")).lower() for w in ("made-up", "demo", "fake"))
+        rel = p.relative_to(root).as_posix()
+        for key, rows in data.items():
+            if not (isinstance(rows, list) and rows and isinstance(rows[0], dict)):
+                continue
+            for row in rows[:limit]:
+                bits = [f"{k} {str(row[k])[:60]}" for k in SCALARS if k in row and not isinstance(row[k], (dict, list))]
+                if demo and "password" in row:
+                    bits.append(f"password {row['password']} (made-up demo account)")
+                if bits:
+                    lines.append(f"- {key}: " + ", ".join(bits) + f"  [{rel}]")
+    return lines
+
+
 def operations(root: Path) -> list[str]:
     contract = root / "docs" / "api-contract.yaml"
     if not contract.is_file():
@@ -59,11 +89,14 @@ def build(root: Path, profile, wbs=None) -> str:
     """The facts as markdown, for the `{facts}` placeholder of the test-writing tasks."""
     cfg = {**DEFAULT, **(profile.guardrails.get("facts") or {})}
     keys, seeds, ops = widget_keys(root, cfg["keys"]), seed_records(root, cfg["seeds"]), operations(root)
+    fixtures = fixture_records(root, cfg.get("fixtures", []))
     lines = ["FACTS (collected from the code just now; use these exactly, never invent ids, keys or paths):", ""]
     lines += ["Widget keys defined in the app ('$x' parts are filled at run time, so find those by key PREFIX):"]
     lines += [f"- Key('{k}')  [{f}]" for k, f in keys] or ["- (the app defines no keys yet)"]
     lines += ["", "Seeded records (real ids; the staging database holds exactly these):"]
     lines += [f"- id {i}{'  name ' + n if n else ''}  [{f}]" for i, n, f in seeds] or ["- (no seed data found)"]
+    if fixtures:
+        lines += ["", "Records the staging mock serves (real ids and names; sign-in accounts are made-up demo data):"] + fixtures
     lines += ["", "API operations of the approved contract:"] + [f"- {o}" for o in ops] or ["- (none)"]
     if wbs is not None:
         lines += ["", "Who may change which files:"]

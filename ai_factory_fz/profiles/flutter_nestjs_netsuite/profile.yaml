@@ -208,6 +208,10 @@ guardrails:
   entry_points:
     backend: [server/src/main.ts, server/src/app.module.ts]
     frontend: [app/lib/main.dart]
+  # Test data the facts file lists for the test writers: the staging mock's fixtures (this profile has no database).
+  facts:
+    fixtures: [infra/suitecommerce-mock/fixtures/*.json]
+    seeds: []
   contract_copies:
     docs/api-contract.yaml: [server/openapi.yaml, app/openapi.yaml]
   scope_also_allowed: [] # extra paths any coding item may change (e.g. [.github/])
