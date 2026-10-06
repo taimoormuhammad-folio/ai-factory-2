@@ -29,6 +29,11 @@ def new_run_id(product_hint: str = "") -> str:
     return f"{stamp}-{slug}" if slug else stamp
 
 
+def _stamp_free(text: str) -> str:
+    """The document without the `written_at:` line of its header."""
+    return "\n".join(ln for ln in text.splitlines() if not ln.startswith("written_at:"))
+
+
 class Workspace:
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -64,6 +69,8 @@ class Workspace:
     def write_text(self, rel_path: str, content: str) -> Path:
         p = self.resolve(rel_path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        if p.is_file() and content.startswith("---\n") and _stamp_free(p.read_text(encoding="utf-8", errors="replace")) == _stamp_free(content):
+            return p          # only the written_at stamp differs: keep the file, so gate approvals (file hashes) still hold
         p.write_text(content, encoding="utf-8")
         return p
 
