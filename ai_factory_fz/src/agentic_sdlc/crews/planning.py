@@ -74,9 +74,11 @@ def wbs_errors(wbs: Wbs, prd: PRD, architecture: ArchitectureDoc, workdirs: dict
 def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str],
                stack: str, revision_notes: str = "", layout: str = "",
                allowed: dict[str, list[str]] | None = None,
-               entry_points: dict[str, list[str]] | None = None) -> TaskResult[Wbs]:
+               entry_points: dict[str, list[str]] | None = None, scope: Scope | None = None) -> TaskResult[Wbs]:
     """The Architect's work breakdown: packages -> small tasks, each owning paths with a verify command.
-    `allowed`: component -> the command prefixes its verify command may use."""
+    `allowed`: component -> the command prefixes its verify command may use. The scope limits apply here, where the
+    task list is made: the Project manager may not add or drop tasks, so an oversize WBS cannot be fixed later."""
+    scope = scope or Scope()
     return runner.run(
         PHASE,
         "design_wbs",
@@ -89,10 +91,12 @@ def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, work
                 f"- {c}: {w}/ (verify with: {', '.join((allowed or {}).get(c, [])) or 'any listed command'})"
                 for c, w in workdirs.items()),
             "entry_points": "\n".join(f"- {c}: {', '.join(ps)}" for c, ps in (entry_points or {}).items()) or "(none)",
+            "scope_rules": scope.rules_text(),
             "revision_notes": revision_notes or "(none)",
         },
         Wbs,
-        guardrail=artifact_guardrail(Wbs, lambda w: wbs_errors(w, prd, architecture, workdirs, allowed)),
+        guardrail=artifact_guardrail(Wbs, lambda w: wbs_errors(w, prd, architecture, workdirs, allowed)
+                                     + scope._over("work items", len(w.tasks), scope.max_work_items)),
     )
 
 

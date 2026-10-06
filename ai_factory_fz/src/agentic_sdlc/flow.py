@@ -346,7 +346,7 @@ class SDLCFlow(Flow[ProjectState]):
                        for name, c in profile.components.items()}
             self.state.wbs = self._record(planning.design_wbs(
                 self.deps.runner, self.state.prd, self.state.architecture, workdirs, profile.stack_summary(),
-                notes, layout=profile.layout_summary(), allowed=allowed, entry_points=profile.entry_points()))
+                notes, layout=profile.layout_summary(), allowed=allowed, entry_points=profile.entry_points(), scope=self._scope))
             ws.save_artifact("wbs", self.state.wbs, agent="architect", inputs=["docs/spec.md", "docs/design.md"])
             self._checkpoint("Design: work breakdown structure")
 

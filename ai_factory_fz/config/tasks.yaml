@@ -42,6 +42,9 @@ design_wbs:
     The solution (your design):
     {solution}
 
+    Scope limits (a WBS over the work-item limit is rejected, and the Project manager cannot cut tasks later):
+    {scope_rules}
+
     Target stack: {stack}
 
     Repository layout (fixed by the build tooling):

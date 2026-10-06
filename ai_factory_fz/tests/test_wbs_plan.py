@@ -134,3 +134,20 @@ def test_both_planning_prompts_get_the_entry_points(wbs, prd, architecture):
     for key in ("design_wbs", "plan_delivery"):
         assert "- frontend: app/lib/main.dart" in seen[key]["entry_points"]
         assert "{entry_points}" in load_config("tasks")[key]["description"]
+
+
+def test_the_wbs_is_held_to_the_work_item_limit_where_it_is_made(wbs, prd, architecture):
+    from agentic_sdlc.scope import Scope
+
+    seen = {}
+
+    class Runner:
+        def run(self, phase, key, inputs, model, guardrail=None):
+            seen["inputs"], seen["guardrail"] = inputs, guardrail
+
+    planning.design_wbs(Runner(), prd, architecture, WORKDIRS, "stack", scope=Scope(max_work_items=1))
+    assert "work items" in seen["inputs"]["scope_rules"]
+    from types import SimpleNamespace
+
+    ok, message = seen["guardrail"](SimpleNamespace(pydantic=wbs, raw=wbs.model_dump_json()))   # the fixture has 2 tasks
+    assert not ok and "Too many work items: 2 (limit 1)" in str(message)
