@@ -13,6 +13,7 @@ from agentic_sdlc.artifacts.plan import DeliveryPlan
 from agentic_sdlc.artifacts.wbs import Wbs
 from agentic_sdlc.artifacts.prd import PRD, ProductBrief, QAPair
 from agentic_sdlc.artifacts.reports import QAReport, WorkItemResult
+from agentic_sdlc.artifacts.review import ReviewReport
 from agentic_sdlc.artifacts.tests import AcceptanceSuite
 
 
@@ -63,6 +64,9 @@ class MilestoneProgress(BaseModel):
     status: Literal["todo", "done", "partial", "failed"] = "todo"
     qa_rounds: int = 0
     qa_reports: list[QAReport] = Field(default_factory=list)
+    reviews: list[ReviewReport] = Field(default_factory=list)       # Code Reviewer, one per round that reached review
+    evidence: list[str] = Field(default_factory=list)               # report files of the last round (integration, scans)
+    open_findings: list[str] = Field(default_factory=list)          # minor or low-confidence items shown at the merge gate
 
 
 class BuildState(BaseModel):

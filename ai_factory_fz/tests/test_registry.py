@@ -8,7 +8,7 @@ from agentic_sdlc.settings import load_config
 ALL_AGENTS = [
     "business_analyst", "project_manager", "architect", "ui_ux_designer",
     "backend_developer", "frontend_developer", "qa_engineer", "deployment_engineer",
-    "integration_pass", "smoke_tester", "test_writer",
+    "integration_pass", "smoke_tester", "test_writer", "code_reviewer",
 ]
 
 

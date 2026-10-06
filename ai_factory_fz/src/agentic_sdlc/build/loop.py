@@ -30,10 +30,12 @@ from typing import Any, Callable
 
 from agentic_sdlc.artifacts.backlog import Milestone, WorkItem
 from agentic_sdlc.artifacts.reports import Bug, QAReport, WorkItemResult
+from agentic_sdlc.artifacts.review import ReviewReport
 from agentic_sdlc.artifacts.tests import AcceptanceSuite, test_plan_markdown
 from agentic_sdlc.artifacts.wbs import _prefix as owned_prefix
 from agentic_sdlc.build.coders import Job, Worker
 from agentic_sdlc.build.scaffold import ScaffoldError, required_runtimes, scaffold
+from agentic_sdlc.build import verify
 from agentic_sdlc.build.services import ServiceError, acceptance_database, environment_failure
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import code as code_guardrails
@@ -73,6 +75,8 @@ class BuildConfig:
     qa_fix_rounds: int = 3
     guard_rules: set[str] = field(default_factory=set)   # agent guardrails on (DV*, QA*)
     stop_on_failed: bool = True      # a work item that failed for good stops the run (a person must look)
+    verify: bool = False             # Integrator checks + the profile's scans run every QA round
+    review: bool = False             # Code Reviewer reviews each milestone that is clean otherwise
     acceptance_tests: bool = False   # Test Writer writes locked acceptance tests before each milestone
     parallel: bool = False           # backend and frontend lanes build at the same time
 
@@ -87,6 +91,8 @@ class BuildConfig:
             qa_fix_rounds=pipeline.get("limits", {}).get("qa_fix_rounds", 3),
             guard_rules=agent_guardrails.enabled(pipeline),
             stop_on_failed=bool(b.get("stop_on_failed", True)),
+            verify=bool(b.get("verify", False)),
+            review=bool(b.get("review", False)),
             acceptance_tests=bool(b.get("acceptance_tests", False)),
             parallel=bool(b.get("parallel", False)),
         )
@@ -286,6 +292,11 @@ class Builder:
         if wd == comp.workdir:
             return comp
         return comp.model_copy(update={"workdir": wd})
+
+    def effective_component_for(self, name: str) -> Component:
+        comp = self.profile.components[name]
+        wd = component_workdir(self.ws, comp)
+        return comp if wd == comp.workdir else comp.model_copy(update={"workdir": wd})
 
     def block_reason(self, item: WorkItem) -> str | None:
         for dep in item.depends_on:
@@ -634,6 +645,24 @@ class Builder:
                 lines.append("  Last output:\n" + "\n".join("    " + ln for ln in run.output[-1500:].splitlines()))
         return "\n".join(lines) or "(no locked acceptance tests for this milestone)"
 
+    # ---------- merge gate feedback (G5) ----------
+
+    def feedback_round(self, feedback: str) -> None:
+        """The developer of record rejected the merge: builders get the feedback, then the last milestone is
+        verified (integration, scans, QA, review) again."""
+        milestones = [m for m in self.selected_milestones() if any(self.s.build.item(w).status == "done"
+                                                                    for w in m.work_item_ids if w in self.items)]
+        if not milestones or not feedback.strip():
+            return
+        m = milestones[-1]
+        owner = next(w for w in reversed(m.work_item_ids) if w in self.items and self.s.build.item(w).status == "done")
+        bug = Bug(id="G5-001", work_item_id=owner, title="Merge review feedback", severity="major",
+                  steps="the developer of record's review of the merge package", expected="the feedback is addressed",
+                  actual=feedback)
+        self.fix_bugs(m, [bug])
+        if self.can_continue():
+            self.qa_milestone(m)
+
     # ---------- QA ----------
 
     def qa_milestone(self, m: Milestone) -> None:
@@ -647,20 +676,50 @@ class Builder:
             return
 
         session_rounds = 0  # the fix-round limit applies per run, so a resume gets fresh rounds
+        previous: frozenset[str] | None = None
         while True:
             mp.qa_rounds += 1
             session_rounds += 1
-            report = self._qa(m, done, not_done)
+            # Integrate (7) and Verify (8): deterministic checks first, then the QA agent reads their results.
+            ver = verify.VerifyResult()
+            if self.cfg.verify:
+                ver.extend(verify.integrate(self, m, items, mp.qa_rounds))
+                ver.extend(verify.scans(self, m, items, mp.qa_rounds))
+                self.ws.write_text("docs/integration-report.md", self.integration_markdown(m, mp.qa_rounds, ver))
+                mp.evidence = ver.evidence
+            report = self._qa(m, done, not_done, ver.text())
             if report is None:
                 self.stop(f"QA agent failed on {m.id}")
                 break
+            blocking_ver = [b for b in ver.bugs if b.severity in ("blocker", "major")]
+            report.bugs += [b for b in ver.bugs if b.id not in {x.id for x in report.bugs}]
+            report.passed = report.passed and not blocking_ver            # "passed" needs the reports behind it
             mp.qa_reports.append(report)
             self.ws.write_text(f"reports/qa_{m.id}_round{mp.qa_rounds}.md", report.to_markdown())
             self.ws.commit(f"QA {m.id} round {mp.qa_rounds}: {'passed' if report.passed else 'failed'}")
             bugs = report.blocking_bugs()
+            if not bugs and self.cfg.review:                               # Review (9): only clean code is reviewed
+                review = self._review(m, done, ver.text(), report)
+                if review is None:
+                    self.stop(f"Code Reviewer failed on {m.id}")
+                    break
+                mp.reviews.append(review)
+                self.ws.write_text(f"reports/review_{m.id}_round{mp.qa_rounds}.md", review.to_markdown())
+                self.ws.write_text("docs/review.md", self.review_markdown())
+                self.ws.commit(f"Review {m.id} round {mp.qa_rounds}: {len(review.actionable())} blocking finding(s)")
+                bugs = review.bugs()
+                mp.open_findings = [f"{f.id} [{f.lens}/{f.severity}/{f.confidence}] {f.title} ({f.work_item_id})"
+                                    for f in review.findings if f not in review.actionable()]
             if not bugs:
                 mp.status = "done" if not not_done else "partial"
                 break
+            now = verify.signature(bugs)
+            if previous is not None and now == previous:
+                mp.status = "failed"
+                self.stop(f"{m.id}: the last fix round changed nothing ({len(bugs)} blocking finding(s) are the same); "
+                          f"a person needs to look: see reports/qa_{m.id}_round{mp.qa_rounds}.md")
+                break
+            previous = now
             if session_rounds > self.cfg.qa_fix_rounds:
                 mp.status = "failed"
                 self.stop(f"{m.id}: {len(bugs)} blocking bug(s) remain after {self.cfg.qa_fix_rounds} fix rounds; "
@@ -671,7 +730,66 @@ class Builder:
                 break
         self._save(f"Build: {m.id} {mp.status}")
 
-    def _qa(self, m: Milestone, done: list[WorkItem], not_done: list[WorkItem]) -> QAReport | None:
+    def integration_markdown(self, m: Milestone, round_no: int, ver: "verify.VerifyResult") -> str:
+        head = self.ws.doc_header("pipeline (deterministic checks)", [])
+        bugs = "\n".join(f"- {b.id} [{b.severity}] {b.title} ({b.work_item_id})" for b in ver.bugs) or "None."
+        files = "\n".join(f"- {e}" for e in ver.evidence) or "- (none)"
+        return (f"{head}# Integration report: {m.id}, round {round_no}\n\n{ver.text()}\n\n## Findings\n{bugs}\n\n"
+                f"## Raw results\n{files}\n")
+
+    def review_markdown(self) -> str:
+        parts = [f"{self.ws.doc_header('code_reviewer', [])}# Code review\n"]
+        for mid, mp in self.s.build.milestones.items():
+            if mp.reviews:
+                parts.append(f"\n---\n\n{mp.reviews[-1].to_markdown()}")
+        return "\n".join(parts) + "\n"
+
+    def _review(self, m: Milestone, done: list[WorkItem], verification: str, qa: QAReport) -> ReviewReport | None:
+        diff = self.milestone_diff(m)
+        inputs = {
+            "milestone": f"{m.id} {m.name}: {m.goal}",
+            "diff_stat": diff,
+            "items": "\n".join(f"- {i.id} [{i.component}] {i.title}; owns: {', '.join(i.owns) or '-'}" for i in done),
+            "stories": self.stories_text(sorted({sid for i in done for sid in i.story_ids})),
+            "docs_dir": str(self.ws.root / "docs"),
+            "verification": f"{verification}\nQA: {qa.summary}",
+            "revision_notes": "",
+        }
+        ids = [i.id for i in done]
+        runtimes = sorted({self.component(i).runtime for i in done if self.component(i).runtime})
+        job = Job(PHASE, "code_reviewer", "review_milestone", inputs, ReviewReport, ".", runtimes[0] if runtimes else None,
+                  runtimes[1:], policy={"read_only": True})
+        try:
+            review = self.record(self.worker_for("code_reviewer").run(job))
+            errors = review.errors(ids)
+            if errors:                                       # one retry with the reasons
+                job.feedback = "\n".join(errors)
+                review = self.record(self.worker_for("code_reviewer").run(job))
+            return review
+        except UsageLimitError as e:
+            self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
+            return None
+        except PhaseError as e:
+            log.error("%s", e)
+            return None
+
+    def milestone_diff(self, m: Milestone) -> str:
+        """The milestone's changed files (commits of its tasks), for the reviewer to read."""
+        from git import Repo
+
+        shas = [self.s.build.item(w).commit for w in m.work_item_ids if w in self.items and self.s.build.item(w).commit]
+        if not shas:
+            return "(no task commits recorded)"
+        repo = Repo(self.ws.root)
+        files: dict[str, str] = {}
+        for sha in shas:
+            for line in repo.git.show("--numstat", "--format=", sha).splitlines():
+                add, rem, path = (line.split("\t") + ["", "", ""])[:3]
+                if path and not path.startswith(("docs/", "reports/", "gates/")) and path != "tests.lock":   # code only
+                    files[path] = f"+{add} -{rem}"
+        return "\n".join(f"- {p} ({stat})" for p, stat in sorted(files.items())) or "(no changes)"
+
+    def _qa(self, m: Milestone, done: list[WorkItem], not_done: list[WorkItem], verification: str = "") -> QAReport | None:
         runtimes = sorted({self.component(i).runtime for i in done if self.component(i).runtime})
         inputs = {
             "milestone": f"{m.id} {m.name}: {m.goal}",
@@ -681,9 +799,10 @@ class Builder:
             "stories": self.stories_text(sorted({sid for i in done for sid in i.story_ids})),
             "docs_dir": str(self.ws.root / "docs"),
             "acceptance": self._acceptance_text.get(m.id, "(no locked acceptance tests for this milestone)"),
+            "verification": verification or "(not run: build.verify is off)",
         }
         job = Job(PHASE, "qa_engineer", "qa_milestone", inputs, QAReport, ".", runtimes[0] if runtimes else None,
-                  runtimes[1:], policy={"locked": sorted(self.s.build.locked_tests)})
+                  runtimes[1:], policy={"read_only": True})
         try:
             report = self.record(self.worker_for("qa_engineer").run(job))
             errors = agent_guardrails.report_errors(report, [i.id for i in done], self.cfg.guard_rules)

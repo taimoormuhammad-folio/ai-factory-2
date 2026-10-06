@@ -391,7 +391,8 @@ class ClaudeCodeWorker(_CodeShellWorker):
 
     def build_command(self, job: Job, model: str, system: str, prompt: str) -> list[str]:
         docs = str(self.workspace.root / "docs")
-        allowed = ["Read", "Glob", "Grep", "Edit", "Write", *self.agents.web_rules(job.agent_key)]
+        read_only = bool((job.policy or {}).get("read_only"))
+        allowed = ["Read", "Glob", "Grep", *([] if read_only else ["Edit", "Write"]), *self.agents.web_rules(job.agent_key)]
         for c in allowed_commands(self.sandbox, self._runtimes(job)):
             allowed += [f"Bash({c})", f"Bash({c} *)"]
         return [

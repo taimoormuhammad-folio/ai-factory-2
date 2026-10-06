@@ -34,6 +34,14 @@ class ScaffoldStep(BaseModel):
     creates: str | None = None           # skip the step if this path already exists
 
 
+class ScanStep(BaseModel):
+    """A verification scan run per milestone (lint, dependency audit, coverage...): its raw output is kept."""
+    name: str
+    command: str
+    severity: str = "major"              # blocker | major | minor | info (info: reported, never fails the milestone)
+    network: bool = False                # the scan needs the network (e.g. an audit), so it runs on the host network
+
+
 class AcceptanceDatabase(BaseModel):
     """A throwaway PostgreSQL the acceptance suite runs against (started by the pipeline, see build/services.py)."""
     image: str = "postgres:16"
@@ -60,6 +68,7 @@ class Component(BaseModel):
     checks: list[str] = Field(default_factory=list)   # must pass before an item counts as done
     scaffold: list[ScaffoldStep] = Field(default_factory=list)
     acceptance: AcceptanceTests | None = None
+    scans: list[ScanStep] = Field(default_factory=list)
 
 
 class ReleaseConfig(BaseModel):

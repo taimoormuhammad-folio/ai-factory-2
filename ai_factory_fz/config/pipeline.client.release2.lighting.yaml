@@ -44,6 +44,10 @@ build:
   acceptance_tests: true
   # Backend (+infra) and frontend lanes build at the same time; app tasks work against the contract.
   parallel: true
+  # Every QA round: the Integrator's checks (combined build and tests, contract copies, locked tests, secrets)
+  # and the profile's scans, with raw results in reports/; then, if clean, the Code Reviewer.
+  verify: true
+  review: true
   milestones: []
   sandbox: local
   check_fix_attempts: 2
@@ -54,6 +58,7 @@ gates:
   architecture: true # G2 design approval (human architect)
   estimate: true       # G3 estimate approval (customer, through the Product Owner)
   ui: true             # G4 UI design approval (customer, through the Product Owner)
+  merge: true         # G5 merge approval (developer of record, with a risk note)
   release: false      # G6 UAT sign-off (customer, through the Product Owner)
 
 # Risk tier L | M | H (the intake can set it per run). Tier L may waive the design gate

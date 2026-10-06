@@ -74,3 +74,4 @@ agents:
 
   smoke_tester: fast
   test_writer: balanced
+  code_reviewer: reasoning

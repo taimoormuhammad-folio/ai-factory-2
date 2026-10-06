@@ -285,7 +285,8 @@ qa_milestone:
 
     Do this:
     1. For each acceptance criterion above that the built items cover, find the code and the tests
-       that prove it. Add missing tests where you can, and run the test suites if you can.
+       that prove it (the locked acceptance tests are the definition of done). You never edit files:
+       a criterion without a passing test is a bug.
     2. Check that implemented endpoints match api-contract.yaml (paths, methods, status codes, shapes).
     3. Look for security problems: auth checks, input validation, secrets in code.
     Report each real defect as a bug with the work item it belongs to. Severity: blocker (breaks
@@ -295,7 +296,39 @@ qa_milestone:
     Locked acceptance tests (written before the build; a failing one means its criterion is not met,
     report it as a major bug for the task that serves the criterion):
     {acceptance}
+
+    Integration and scan results (deterministic; report files are listed; do not repeat their bugs, but
+    never say "passed" for anything they show failing):
+    {verification}
   expected_output: A QA report.
+
+review_milestone:
+  agent: code_reviewer
+  description: |
+    Review the code of milestone {milestone} independently. You did not write it and you never edit it.
+
+    What changed (git diff stat) and where to read it: {diff_stat}
+    Read the changed files with your tools. Work items and their owned paths:
+    {items}
+
+    Spec and acceptance criteria this milestone serves:
+    {stories}
+
+    Documents in {docs_dir}: spec.md, design.md, api-contract.yaml, adr-*.md, ui-design.md.
+    QA and scan summary for this milestone: {verification}
+
+    Review through all five lenses and set lenses_covered to the ones you did:
+    - spec: does the code do what the acceptance criteria say, including the edge cases?
+    - security: authorization, input validation, injection, secrets, unsafe defaults, data exposure.
+    - design: does it follow the design, the ADRs and the API contract exactly (no drift)?
+    - quality: correctness, error handling, duplication, tests that prove little.
+    - operability: configuration, logging without personal data, failure behaviour, migrations.
+    For each finding give the work item, file and line, severity (blocker: unsafe or wrong in a way
+    that must not merge; major: a criterion or the design is not met; minor: worth fixing later),
+    your confidence (low/medium/high), what is wrong and what would fix it. Only blocker/major
+    findings you are at least moderately sure of send work back to the builders: do not pad the list.
+    {revision_notes}
+  expected_output: A review report with findings per lens.
 
 write_acceptance_tests:
   agent: test_writer

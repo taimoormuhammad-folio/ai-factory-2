@@ -45,6 +45,11 @@ def changed_files(ws: Workspace) -> list[str]:
     return sorted(paths)
 
 
+def tracked_files(ws: Workspace) -> list[str]:
+    """Every file git knows in the run folder (committed or staged)."""
+    return Repo(ws.root).git.ls_files().splitlines()
+
+
 def discard_changes(ws: Workspace, workdir: str) -> None:
     """Throw away uncommitted changes under a folder (e.g. a failed or rejected work item)."""
     repo = Repo(ws.root)

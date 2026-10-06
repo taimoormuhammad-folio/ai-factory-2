@@ -20,6 +20,7 @@ from agentic_sdlc import preflight
 from agentic_sdlc import intake
 from agentic_sdlc.artifacts.architecture import CONTRACT_PATH
 from agentic_sdlc.artifacts.plan import to_backlog
+from agentic_sdlc.artifacts.review import package_markdown
 from agentic_sdlc.crews import design, discovery, planning
 from agentic_sdlc.design import mockups as mockup_kit
 from agentic_sdlc.guardrails import agents as agent_guardrails
@@ -217,7 +218,8 @@ class SDLCFlow(Flow[ProjectState]):
                     return "stopped"
                 gate_files.archive_decision(root, gid)
             else:
-                decision = request_approval(gate, summary, [root / d for d in docs], mode, self.deps.input_fn)
+                decision = request_approval(gate, summary, [root / d for d in docs], mode, self.deps.input_fn,
+                                            need_risk_note=gate == "merge")
         decision.gate_id, decision.artifact_hashes = gid, hashes
         gate_files.write_decision(root, decision)        # gates/<G>.gate holds the latest decision
         self.state.gate_history.append(decision)
@@ -498,22 +500,11 @@ class SDLCFlow(Flow[ProjectState]):
         return self._after_build()
 
     @router("build_requested")
-    def build_phase(self) -> Literal["release_requested", "run_finished", "stopped"]:
+    def build_phase(self) -> Literal["build_done", "stopped"]:
         sync_build_with_backlog(self.state)
         done_before = {w for w, p in self.state.build.items.items() if p.status == "done"}
         if self._can_continue():
-            Builder(
-                state=self.state,
-                workspace=self.deps.workspace,
-                profile=self.deps.profile,
-                sandbox=self.deps.sandbox,
-                worker_for=self.deps.worker_for,
-                config=BuildConfig.from_pipeline(self.deps.pipeline),
-                record=self._record,
-                checkpoint=self._checkpoint,
-                can_continue=self._can_continue,
-                stop=self._stop,
-            ).run()
+            self._builder().run()
         done_now = {w for w, p in self.state.build.items.items() if p.status == "done"}
         if done_now - done_before and (self.state.release.deployment or self.state.release.rounds):
             # New features since the last release verification: verify again, with a smoke
@@ -526,6 +517,58 @@ class SDLCFlow(Flow[ProjectState]):
                 and (self.deps.pipeline.get("limits", {}) or {}).get("stop_on_blocked", True):
             self._stop("Blocked work needs a person: see blocked.md")
             self._checkpoint("Build: blocked work, run stopped")
+        if self.state.status != "running":
+            return "stopped"
+        return "build_done"
+
+    def _builder(self) -> Builder:
+        return Builder(
+            state=self.state, workspace=self.deps.workspace, profile=self.deps.profile, sandbox=self.deps.sandbox,
+            worker_for=self.deps.worker_for, config=BuildConfig.from_pipeline(self.deps.pipeline),
+            record=self._record, checkpoint=self._checkpoint, can_continue=self._can_continue, stop=self._stop)
+
+    def _write_package(self) -> None:
+        """docs/package.md and docs/review.md: what the developer of record reads at the merge gate (G5)."""
+        ws, b = self.deps.workspace, self.state.backlog
+        milestones = []
+        for m in b.milestones:
+            mp = self.state.build.milestones.get(m.id)
+            if mp is None:
+                continue
+            evidence = [f"reports/qa_{m.id}_round{mp.qa_rounds}.md"] + list(mp.evidence)
+            evidence += [f"reports/review_{m.id}_round{mp.qa_rounds}.md"] if mp.reviews else []
+            evidence += [p for p in sorted(str(x.relative_to(ws.root)) for x in (ws.root / "reports").glob(f"acceptance_{m.id}_*"))]
+            milestones.append({
+                "id": m.id, "name": m.name, "status": mp.status, "qa_rounds": mp.qa_rounds, "evidence": evidence,
+                "open": mp.open_findings,
+                "tasks": [{"id": w, "title": next((i.title for i in b.work_items if i.id == w), ""),
+                           "status": self.state.build.item(w).status, "commit": (self.state.build.item(w).commit or "")[:8]}
+                          for w in m.work_item_ids]})
+        ws.write_text("docs/package.md", ws.doc_header("code_reviewer", ["docs/review.md"]) + package_markdown(self.state.run_id, milestones))
+
+    @router(or_("build_done", "revise_merge"))
+    def merge_gate(self) -> Literal["merge_approved", "merge_rejected", "stopped"]:
+        """G5 merge approval: the developer of record reads the package and writes a risk note in their own words."""
+        if self.state.status != "running":
+            return "stopped"
+        if not (self.deps.pipeline.get("gates") or {}).get("merge", False):
+            return "merge_approved"
+        self._write_package()
+        built = sum(1 for p in self.state.build.items.values() if p.status == "done")
+        summary = f"Merge: {built} of {len(self.state.build.items)} tasks built, every milestone QA'd and code-reviewed."
+        docs = ["docs/package.md"] + (["docs/review.md"] if (self.deps.workspace.root / "docs/review.md").exists() else [])
+        docs += ["docs/integration-report.md"] if (self.deps.workspace.root / "docs/integration-report.md").exists() else []
+        docs += ["docs/test-plan.md"] if (self.deps.workspace.root / "docs/test-plan.md").exists() else []
+        return self._gate("merge", summary, docs, lambda: None)
+
+    @listen("merge_rejected")
+    def revise_merge(self) -> None:
+        """The developer of record sent the code back: builders fix it, then the milestone is verified again."""
+        feedback = self.state.revision_notes("merge")
+        self._builder().feedback_round(feedback)
+
+    @router("merge_approved")
+    def after_merge(self) -> Literal["release_requested", "run_finished", "stopped"]:
         if self.state.status != "running":
             return "stopped"
         return self._after_build()

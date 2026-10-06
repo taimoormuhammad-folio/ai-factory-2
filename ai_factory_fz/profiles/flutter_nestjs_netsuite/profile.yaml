@@ -90,6 +90,10 @@ components:
     workdir: server
     runtime: node
     checks: [npm run build, npm test]
+    # Verification scans, run per milestone by QA + Verify; raw output is saved under reports/.
+    scans:
+      - {name: lint, command: npm run lint, severity: major}
+      - {name: dependency audit, command: npm audit --audit-level=high, severity: minor, network: true}   # reported at G5
     # Locked acceptance tests (Test Writer, before the build); run at each milestone.
     acceptance:
       dir: server/test/acceptance

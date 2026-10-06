@@ -3,6 +3,7 @@
   - writes outside the run folder, to protected paths (gates/, tests.lock, docs/, run state) or to
     locked acceptance tests;
   - writes outside the task's owned paths (when the job has them), except dependency manifests;
+  - any write at all, for read-only steps (QA, review);
   - shell commands that deploy, publish or touch production (agents never deploy).
 
 Run as:  python -m agentic_sdlc.hooks.guard <policy.json>   (Claude Code passes the tool call on stdin)
@@ -52,6 +53,8 @@ def decide(policy: dict[str, Any], call: dict[str, Any]) -> str | None:
         return None
     if tool not in WRITE_TOOLS:
         return None
+    if policy.get("read_only"):
+        return "You are read-only in this step: report what you find, never edit files (the builders fix it)."
     root = Path(policy["root"]).resolve()
     target = Path(str(data.get("file_path") or data.get("notebook_path") or "")).expanduser()
     target = (target if target.is_absolute() else root / target).resolve()

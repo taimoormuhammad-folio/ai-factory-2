@@ -192,14 +192,26 @@ def test_qa_bugs_go_back_to_the_developer_then_pass(tmp_path, prd, profile):
 
 
 def test_bugs_remaining_after_fix_rounds_stop_the_run(tmp_path, prd, profile):
-    bug = Bug(id="BUG-001", work_item_id="WI-001", title="t", severity="blocker", steps="s", expected="e", actual="a")
-    worker = ScriptedWorker({"qa_milestone": [QAReport(milestone_id="M1", passed=False, bugs=[bug], summary="bad")] * 5})
+    # A different bug each round: progress is being made, but the round limit is reached.
+    bugs = [Bug(id=f"BUG-00{i}", work_item_id="WI-001", title=f"problem {i}", severity="blocker", steps="s", expected="e",
+                actual="a") for i in range(1, 6)]
+    worker = ScriptedWorker({"qa_milestone": [QAReport(milestone_id="M1", passed=False, bugs=[b], summary="bad") for b in bugs]})
     b, s, _, _ = make_builder(tmp_path, prd, profile, [item("WI-001")], [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])],
                               worker=worker, cfg=BuildConfig(milestones=[], qa_fix_rounds=1))
     b.run()
     assert s.status == "stopped"
     assert "blocking bug(s) remain" in s.stop_reason
     assert s.build.milestone("M1").status == "failed"
+
+
+def test_a_fix_round_that_changes_nothing_escalates_early(tmp_path, prd, profile):
+    bug = Bug(id="BUG-001", work_item_id="WI-001", title="t", severity="blocker", steps="s", expected="e", actual="a")
+    worker = ScriptedWorker({"qa_milestone": [QAReport(milestone_id="M1", passed=False, bugs=[bug], summary="bad")] * 5})
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [item("WI-001")], [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])],
+                              worker=worker, cfg=BuildConfig(milestones=[], qa_fix_rounds=3))
+    b.run()
+    assert s.status == "stopped" and "last fix round changed nothing" in s.stop_reason
+    assert s.build.milestone("M1").qa_rounds == 2                  # not all 3 fix rounds were spent
 
 
 def test_minor_bugs_do_not_block(tmp_path, prd, profile):
