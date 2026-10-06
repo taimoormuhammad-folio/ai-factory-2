@@ -14,6 +14,7 @@ from crewai.flow.flow import Flow, listen, or_, router, start
 from pydantic import PrivateAttr
 
 from agentic_sdlc.build.coders import Worker, make_worker
+from agentic_sdlc.build.coverage import markdown as coverage_markdown, uncovered
 from agentic_sdlc.build.loop import BuildConfig, Builder
 from agentic_sdlc.build.sync import sync_build_with_backlog
 from agentic_sdlc import preflight
@@ -545,7 +546,8 @@ class SDLCFlow(Flow[ProjectState]):
                 "tasks": [{"id": w, "title": next((i.title for i in b.work_items if i.id == w), ""),
                            "status": self.state.build.item(w).status, "commit": (self.state.build.item(w).commit or "")[:8]}
                           for w in m.work_item_ids]})
-        ws.write_text("docs/package.md", ws.doc_header("code_reviewer", ["docs/review.md"]) + package_markdown(self.state.run_id, milestones))
+        ws.write_text("docs/package.md", ws.doc_header("code_reviewer", ["docs/review.md"]) + package_markdown(
+            self.state.run_id, milestones, coverage_markdown(uncovered(self.state.prd, self.state.build.acceptance))))
 
     @router(or_("build_done", "revise_merge"))
     def merge_gate(self) -> Literal["merge_approved", "merge_rejected", "stopped"]:
@@ -556,7 +558,11 @@ class SDLCFlow(Flow[ProjectState]):
             return "merge_approved"
         self._write_package()
         built = sum(1 for p in self.state.build.items.values() if p.status == "done")
+        gaps = uncovered(self.state.prd, self.state.build.acceptance)
         summary = f"Merge: {built} of {len(self.state.build.items)} tasks built, every milestone QA'd and code-reviewed."
+        if gaps:
+            summary += (f"\nWARNING: {len(gaps)} acceptance criteria have no locked test "
+                        f"({', '.join(a for a, _, _ in gaps)}); they cannot be proven at release.")
         docs = ["docs/package.md"] + (["docs/review.md"] if (self.deps.workspace.root / "docs/review.md").exists() else [])
         docs += ["docs/integration-report.md"] if (self.deps.workspace.root / "docs/integration-report.md").exists() else []
         docs += ["docs/test-plan.md"] if (self.deps.workspace.root / "docs/test-plan.md").exists() else []

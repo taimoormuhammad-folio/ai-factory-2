@@ -100,7 +100,7 @@ class Acceptor:
         folder = Path(EVIDENCE) / ac_id
         lines_out: list[str] = []
         for key, t in tests:
-            comp = key.split("/", 1)[-1]
+            comp = key.split("/", 1)[-1].split("#")[0]
             info = suites.get(comp)
             if info is None:
                 reasons.append(f"{t.file}: the {comp} suite did not run")

@@ -590,84 +590,116 @@ class Builder:
         self.ws.write_text("tests.lock", json.dumps(self.s.build.locked_tests, indent=2, sort_keys=True) + "\n")
         return locked
 
+    def covered_ac_ids(self, component: str) -> set[str]:
+        """Criteria that already have a locked test for this component (any milestone)."""
+        return {t.ac_id for k, suite in self.s.build.acceptance.items() if k.split("/", 1)[-1].split("#")[0] == component
+                for t in suite.tests}
+
     def write_acceptance_tests(self, m: Milestone) -> None:
-        """Before the milestone is built: tests per acceptance criterion, which must fail, then locked."""
-        by_comp: dict[str, list[str]] = {}
+        """Before the milestone is built: tests per acceptance criterion, which must fail, then locked. Criteria of
+        tasks that are already built and still have no test (a resumed or extended run) get catch-up tests that
+        must pass, so no criterion reaches the release without proof."""
+        new: dict[str, list[str]] = {}
+        retro: dict[str, list[str]] = {}
         for wid in m.work_item_ids:
             item = self.items.get(wid)
             comp = self.profile.components.get(item.component) if item else None
-            if item and comp and comp.acceptance and self.s.build.item(wid).status != "done":
-                by_comp.setdefault(item.component, [])
-                by_comp[item.component] += [a for a in item.ac_ids if a not in by_comp[item.component]]
-        for name, ac_ids in by_comp.items():
-            key = f"{m.id}/{name}"
-            if key in self.s.build.acceptance or not ac_ids or not self.can_continue():
+            if not (item and comp and comp.acceptance):
                 continue
-            comp = self.profile.components[name]
-            acc = comp.acceptance
-            if self.ensure_scaffold(name, comp) or any(self.sandbox.unavailable_reason(rt) for rt in required_runtimes(comp)):
-                log.warning("Acceptance tests for %s skipped: %s cannot be set up here", key, name)
-                continue
-            inputs = {"milestone": f"{m.id} {m.name}: {m.goal}", "component": name, "criteria": self._criteria(ac_ids),
-                      "docs_dir": str(self.ws.root / "docs"), "folder": acc.dir, "command": acc.command,
-                      "runner_note": acc.note}
-            policy = {"owns": [acc.dir], "workdir": comp.workdir, "locked": sorted(self.s.build.locked_tests),
-                      "also_allowed": ["reports/"]}
-            feedback = ""
-            code_guardrails.discard_changes(self.ws, acc.dir)       # no leftovers of an interrupted earlier attempt
-            for attempt in (1, 2):
-                job = Job(PHASE, "test_writer", "write_acceptance_tests", inputs, AcceptanceSuite, comp.workdir,
-                          comp.runtime, feedback=feedback, policy=policy)
+            done = self.s.build.item(wid).status == "done"
+            target = retro if done else new
+            for a in item.ac_ids:
+                if a not in self.covered_ac_ids(item.component) and a not in target.setdefault(item.component, []):
+                    target[item.component].append(a)
+        for name in sorted({*new, *retro}):
+            fresh = [a for a in new.get(name, [])]
+            old = [a for a in retro.get(name, []) if a not in fresh]
+            for ac_ids, expect_pass in ((fresh, False), (old, True)):
+                if not ac_ids or not self.can_continue():
+                    continue
+                base = f"{m.id}/{name}"
+                key = base if base not in self.s.build.acceptance else f"{base}#{len(self.s.build.acceptance) + 1}"
+                if not self._write_suite(m, name, key, ac_ids, expect_pass):
+                    return
+
+    def _write_suite(self, m: Milestone, name: str, key: str, ac_ids: list[str], expect_pass: bool) -> bool:
+        """One Test Writer job with its checks; False when the run was stopped."""
+        comp = self.profile.components[name]
+        acc = comp.acceptance
+        if self.ensure_scaffold(name, comp) or any(self.sandbox.unavailable_reason(rt) for rt in required_runtimes(comp)):
+            log.warning("Acceptance tests for %s skipped: %s cannot be set up here", key, name)
+            return True
+        inputs = {"milestone": f"{m.id} {m.name}: {m.goal}", "component": name, "criteria": self._criteria(ac_ids),
+                  "docs_dir": str(self.ws.root / "docs"), "folder": acc.dir, "command": acc.command,
+                  "runner_note": acc.note,
+                  "mode": ("CATCH-UP: the code for these criteria already exists. Read it and write tests that prove each "
+                           "criterion; the pipeline runs `" + acc.command + "` and requires it to PASS."
+                           if expect_pass else
+                           "Before the code exists: the pipeline runs `" + acc.command + "` and requires it to FAIL.")}
+        policy = {"owns": [acc.dir], "workdir": comp.workdir, "locked": sorted(self.s.build.locked_tests),
+                  "also_allowed": ["reports/"]}
+        feedback = ""
+        code_guardrails.discard_changes(self.ws, acc.dir)       # no leftovers of an interrupted earlier attempt
+        for attempt in (1, 2):
+            job = Job(PHASE, "test_writer", "write_acceptance_tests", inputs, AcceptanceSuite, comp.workdir,
+                      comp.runtime, feedback=feedback, policy=policy)
+            try:
+                suite = self.record(self.worker_for("test_writer").run(job))
+            except UsageLimitError as e:
+                self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
+                return False
+            except PhaseError as e:
+                self.stop(f"Test Writer failed on {key}: {e}")
+                return False
+            if suite.blocked:
+                self.stop(f"Test Writer blocked on {key}: {suite.blocked_reason or 'no reason given'} "
+                          "(answer it, then resume)")
+                return False
+            for t in suite.tests:           # agents work inside the component folder and often list paths from there
+                if not (self.ws.root / t.file).is_file() and (self.ws.root / comp.workdir / t.file).is_file():
+                    t.file = f"{comp.workdir.rstrip('/')}/{t.file}"
+            problems = suite.errors(ac_ids, acc.dir)
+            problems += [f"{t.file} does not exist" for t in suite.tests if not (self.ws.root / t.file).is_file()]
+            with self._git:
+                problems += code_guardrails.check_changes(self.ws, comp, self.profile, {"DV2", "DV3"}, owns=[acc.dir],
+                                                          locked=self.s.build.locked_tests)
+            if not problems:
                 try:
-                    suite = self.record(self.worker_for("test_writer").run(job))
-                except UsageLimitError as e:
-                    self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
-                    return
-                except PhaseError as e:
-                    self.stop(f"Test Writer failed on {key}: {e}")
-                    return
-                if suite.blocked:
-                    self.stop(f"Test Writer blocked on {key}: {suite.blocked_reason or 'no reason given'} "
-                              "(answer it, then resume)")
-                    return
-                for t in suite.tests:           # agents work inside the component folder and often list paths from there
-                    if not (self.ws.root / t.file).is_file() and (self.ws.root / comp.workdir / t.file).is_file():
-                        t.file = f"{comp.workdir.rstrip('/')}/{t.file}"
-                problems = suite.errors(ac_ids, acc.dir)
-                problems += [f"{t.file} does not exist" for t in suite.tests if not (self.ws.root / t.file).is_file()]
-                with self._git:
-                    problems += code_guardrails.check_changes(self.ws, comp, self.profile, {"DV2", "DV3"}, owns=[acc.dir],
-                                                              locked=self.s.build.locked_tests)
-                if not problems:
-                    try:
-                        run = self.run_suite(comp, acc)
-                    except ServiceError as e:
-                        self.stop(f"Acceptance setup for {key} failed: {e}")
-                        return
-                    broken = environment_failure(run.output) if not run.ok else None
-                    if run.ok:
-                        problems = [f"`{acc.command}` passes before the feature is built, so the tests prove nothing; "
-                                    "make each test check the criterion's real behaviour"]
-                    elif broken:
-                        problems = [f"`{acc.command}` fails because of the environment, not because the feature is "
-                                    f"missing ({broken}). The tests must fail only for missing behaviour: fix the test "
-                                    "setup (imports, helpers, scripts) so they reach the app"]
+                    run = self.run_suite(comp, acc)
+                except ServiceError as e:
+                    self.stop(f"Acceptance setup for {key} failed: {e}")
+                    return False
+                broken = environment_failure(run.output) if not run.ok else None
+                if expect_pass:
+                    if not run.ok:
+                        problems = [f"`{acc.command}` fails although the code exists ({'environment: ' + broken if broken else 'exit ' + str(run.exit_code)}). "
+                                    f"Fix the tests so they match the real, built behaviour:\n{run.output[-1500:]}"]
                     else:
-                        self.ws.write_text(f"reports/acceptance_{m.id}_{name}_before.txt", run.output[-20000:])
-                if not problems:
-                    break
-                feedback = "\n".join(problems)
-                self.ws.write_text(f"reports/acceptance_{m.id}_{name}_attempt{attempt}_rejected.txt", feedback + "\n")
-                code_guardrails.discard_changes(self.ws, acc.dir)
-            else:
-                self.stop(f"Acceptance tests for {key} are not usable after 2 attempts: {feedback[:500]}")
-                return
-            locked = self._lock(acc.dir)
-            self.s.build.acceptance[key] = suite
-            self.ws.write_text("docs/test-plan.md", test_plan_markdown(self.s.build.acceptance))
-            self.ws.commit(f"Tests: {len(locked)} locked acceptance test file(s) for {key} (test_writer)",
-                           [comp.workdir, "tests.lock", "docs", "reports"])
-            self._save(f"Tests: {key} written and locked")
+                        self.ws.write_text(f"reports/acceptance_{m.id}_{name}_catchup.txt", run.output[-20000:])
+                elif run.ok:
+                    problems = [f"`{acc.command}` passes before the feature is built, so the tests prove nothing; "
+                                "make each test check the criterion's real behaviour"]
+                elif broken:
+                    problems = [f"`{acc.command}` fails because of the environment, not because the feature is "
+                                f"missing ({broken}). The tests must fail only for missing behaviour: fix the test "
+                                "setup (imports, helpers, scripts) so they reach the app"]
+                else:
+                    self.ws.write_text(f"reports/acceptance_{m.id}_{name}_before.txt", run.output[-20000:])
+            if not problems:
+                break
+            feedback = "\n".join(problems)
+            self.ws.write_text(f"reports/acceptance_{m.id}_{name}_attempt{attempt}_rejected.txt", feedback + "\n")
+            code_guardrails.discard_changes(self.ws, acc.dir)
+        else:
+            self.stop(f"Acceptance tests for {key} are not usable after 2 attempts: {feedback[:500]}")
+            return False
+        locked = self._lock(acc.dir)
+        self.s.build.acceptance[key] = suite
+        self.ws.write_text("docs/test-plan.md", test_plan_markdown(self.s.build.acceptance))
+        self.ws.commit(f"Tests: {len(locked)} locked acceptance test file(s) for {key} (test_writer)",
+                       [comp.workdir, "tests.lock", "docs", "reports"])
+        self._save(f"Tests: {key} written and locked")
+        return True
 
     def run_suite(self, comp: Component, acc) -> SandboxResult:
         """Run a component's acceptance suite, inside its throwaway services (e.g. a PostgreSQL)."""

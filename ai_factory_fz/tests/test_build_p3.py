@@ -457,3 +457,51 @@ def test_device_suites_are_short_and_use_keys_not_guessed_widget_types(tmp_path,
                   "testWidgets('a', (t) async { await t.tap(find.byType(ElevatedButton)); });\n" * 9)
     errors = " ".join(ag.st1_device_suite(ws, profile))
     assert "9 on-device journeys; write at most 8" in errors and "guessed type (ElevatedButton)" in errors
+
+
+# ---------- coverage: every criterion gets a locked test ----------
+
+def test_uncovered_criteria_are_listed_with_must_haves_marked(prd):
+    from agentic_sdlc.artifacts.tests import AcceptanceSuite, AcceptanceTest
+    from agentic_sdlc.build.coverage import markdown, uncovered
+
+    suites = {"M1/backend": AcceptanceSuite(tests=[AcceptanceTest(ac_id="AC-01", file="f", test_name="AC-01 x")])}
+    gaps = uncovered(prd, suites)
+    assert "AC-01" not in [g[0] for g in gaps] and gaps, "AC-02 and the rest have no test"
+    assert "AC-02" in markdown(gaps) and "WITHOUT a locked acceptance test" in markdown(gaps)
+    assert markdown([]).startswith("All acceptance criteria")
+
+
+def test_criteria_of_built_tasks_without_tests_get_catch_up_tests_that_must_pass(tmp_path, prd, profile):
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    sandbox.results_for["npm run test:acceptance"] = [SandboxResult(exit_code=0, output="1 passing")]   # code exists: passes
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True, guard_rules={"DV1", "DV2", "DV3"}))
+    s.build.item("WI-001").status = "done"                       # built before any test existed (a resumed run)
+    worker = FileWorker(b.ws.root, ACCEPTANCE_FILE, suite_for)
+    b.worker_for = lambda agent: worker
+    b.write_acceptance_tests(b.s.backlog.milestones[0])
+    tw = [j for j in worker.jobs if j.task_key == "write_acceptance_tests"]
+    assert len(tw) == 1 and "CATCH-UP" in tw[0].inputs["mode"] and "PASS" in tw[0].inputs["mode"]
+    assert list(s.build.locked_tests) == ["server/test/acceptance/ac-01.spec.ts"]
+    assert b.covered_ac_ids("backend") == {"AC-01"}
+    b.write_acceptance_tests(b.s.backlog.milestones[0])           # nothing missing now: no second job
+    assert len([j for j in worker.jobs if j.task_key == "write_acceptance_tests"]) == 1
+
+
+def test_catch_up_tests_that_fail_against_existing_code_are_sent_back(tmp_path, prd, profile):
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    sandbox.results_for["npm run test:acceptance"] = [SandboxResult(exit_code=1, output="1 failing"),
+                                                      SandboxResult(exit_code=0, output="1 passing")]
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True, guard_rules={"DV1", "DV2", "DV3"}))
+    s.build.item("WI-001").status = "done"
+    worker = FileWorker(b.ws.root, ACCEPTANCE_FILE, suite_for)
+    b.worker_for = lambda agent: worker
+    b.write_acceptance_tests(b.s.backlog.milestones[0])
+    tw = [j for j in worker.jobs if j.task_key == "write_acceptance_tests"]
+    assert len(tw) == 2 and "fails although the code exists" in tw[1].feedback

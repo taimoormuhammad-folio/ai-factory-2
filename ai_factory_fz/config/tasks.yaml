@@ -344,7 +344,8 @@ review_milestone:
 write_acceptance_tests:
   agent: test_writer
   description: |
-    Write the acceptance tests for milestone {milestone}, component {component}, BEFORE the code exists.
+    Write the acceptance tests for milestone {milestone}, component {component}.
+    {mode}
 
     Acceptance criteria to prove (one or more tests each; put the criterion id in the test name):
     {criteria}
@@ -360,8 +361,8 @@ write_acceptance_tests:
     - Test behaviour through the public surface: HTTP calls against the app module for the backend
       (the SuiteCommerce or other external services faked at their HTTP boundary), widgets found by
       Key for the app. Use the contract's exact paths, fields and status codes.
-    - Never write application code, stubs or fakes of the code under test: the tests must fail now,
-      because the feature is not built yet. The pipeline runs `{command}` and requires it to fail.
+    - Never write application code, stubs or fakes of the code under test. (See the mode above for whether
+      the run of `{command}` must fail now or pass now.)
     - The builders cannot change these tests, and they read them first. So put everything the tests
       need from the app in ONE file, {folder}/support/contract.md (or contract.dart / contract.ts for
       constants): the root widget or module and where it is imported from, the package name, every

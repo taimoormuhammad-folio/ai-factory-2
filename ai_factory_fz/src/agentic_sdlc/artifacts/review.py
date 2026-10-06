@@ -63,7 +63,7 @@ class ReviewReport(BaseModel):
         return "\n".join(lines)
 
 
-def package_markdown(run_id: str, milestones: list[dict]) -> str:
+def package_markdown(run_id: str, milestones: list[dict], coverage: str = "") -> str:
     """docs/package.md for the merge gate (G5): per milestone what was built, verified and reviewed, with the
     evidence files, so the developer of record reads facts and not a summary."""
     lines = [f"# Merge package: {run_id}", "",
@@ -75,4 +75,6 @@ def package_markdown(run_id: str, milestones: list[dict]) -> str:
         lines += ["", "Evidence:"] + [f"- {e}" for e in m["evidence"]] + [""]
         if m.get("open"):
             lines += ["Open findings (minor, or low confidence):"] + [f"- {o}" for o in m["open"]] + [""]
+    if coverage:
+        lines += ["## Test coverage of the acceptance criteria", "", coverage]
     return "\n".join(lines)
