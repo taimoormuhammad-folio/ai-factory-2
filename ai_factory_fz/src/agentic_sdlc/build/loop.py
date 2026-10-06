@@ -563,7 +563,7 @@ class Builder:
         try:
             return self.record(self.worker_for(comp.agent).run(job))
         except UsageLimitError as e:
-            self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
+            self.stop(f"{e}. Resume the run after the limit resets or credit is added (uv run resume <run_id>).")
             return None
         except PhaseError as e:
             log.error("%s", e)
@@ -648,7 +648,7 @@ class Builder:
             try:
                 suite = self.record(self.worker_for("test_writer").run(job))
             except UsageLimitError as e:
-                self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
+                self.stop(f"{e}. Resume the run after the limit resets or credit is added (uv run resume <run_id>).")
                 return False
             except PhaseError as e:
                 self.stop(f"Test Writer failed on {key}: {e}")
@@ -865,7 +865,7 @@ class Builder:
                 review = self.record(self.worker_for("code_reviewer").run(job))
             return review
         except UsageLimitError as e:
-            self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
+            self.stop(f"{e}. Resume the run after the limit resets or credit is added (uv run resume <run_id>).")
             return None
         except PhaseError as e:
             log.error("%s", e)
@@ -912,7 +912,7 @@ class Builder:
                     report.passed = not report.blocking_bugs()
             return report
         except UsageLimitError as e:
-            self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
+            self.stop(f"{e}. Resume the run after the limit resets or credit is added (uv run resume <run_id>).")
             return None
         except PhaseError as e:
             log.error("%s", e)

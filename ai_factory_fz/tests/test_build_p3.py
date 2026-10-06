@@ -536,3 +536,11 @@ def test_a_block_with_no_files_written_still_stops_the_run_for_a_person(tmp_path
     b.worker_for = lambda agent: worker
     b.write_acceptance_tests(b.s.backlog.milestones[0])
     assert s.status == "stopped" and "AC-03 is untestable" in s.stop_reason
+
+
+def test_an_empty_api_credit_balance_is_a_usage_limit_not_a_code_failure():
+    from agentic_sdlc.crews.base import is_usage_limit
+
+    assert is_usage_limit("Error code: 400 - {'message': 'Your credit balance is too low to access the Anthropic API.'}")
+    assert is_usage_limit("You exceeded your current quota: insufficient_quota")
+    assert not is_usage_limit("Error code: 400 - invalid_request_error: messages.0.content: Field required")

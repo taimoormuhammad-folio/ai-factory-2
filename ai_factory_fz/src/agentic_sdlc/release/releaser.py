@@ -103,7 +103,7 @@ class Releaser:
         try:
             return self.record(self.worker_for(agent).run(job))
         except UsageLimitError as e:
-            self.stop(f"{e}. Resume the run after the limit resets (uv run resume <run_id>).")
+            self.stop(f"{e}. Resume the run after the limit resets or credit is added (uv run resume <run_id>).")
             return None
         except PhaseError as e:
             log.error("%s", e)
