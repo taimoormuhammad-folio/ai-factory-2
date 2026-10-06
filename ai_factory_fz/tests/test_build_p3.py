@@ -668,3 +668,27 @@ def test_ordinary_bugs_and_repairs_beyond_the_limit_go_to_the_developers(tmp_pat
     s.build.test_repairs = ["M1/backend: x (BUG-001): r", "M1/backend: y (BUG-001): r"]       # already repaired twice
     left = b.repair_locked_tests(b.s.backlog.milestones[0], [plain, defect])
     assert [x.id for x in left] == ["BUG-002", "BUG-003"]
+
+
+def test_the_locked_suites_run_again_every_qa_round_so_qa_never_reads_stale_results(tmp_path, prd, profile):
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    sandbox.results_for["npm run test:acceptance"] = [SandboxResult(exit_code=1, output="  ✕ AC-01 lists products\n"),
+                                                      SandboxResult(exit_code=0, output="  ✓ AC-01 lists products\n")]
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True))
+    s.build.locked_tests = {"server/test/acceptance/ac-01.spec.ts": "h"}
+    s.build.item("WI-001").status = "done"
+    seen = []
+    worker = FileWorker(b.ws.root, {}, None)
+    real_qa = b._qa
+
+    def qa(m, done, not_done, verification=""):
+        seen.append(b._acceptance_text[m.id])
+        return real_qa(m, done, not_done, verification)
+
+    b._qa = qa
+    b.worker_for = lambda agent: worker
+    b.qa_milestone(b.s.backlog.milestones[0])
+    assert seen and "FAILED" in seen[0]

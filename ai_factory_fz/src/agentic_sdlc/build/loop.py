@@ -251,7 +251,6 @@ class Builder:
                           + ". Fix the cause (see reports/ and the task's attempts) and resume.")
                 return
             if mp.status == "todo" or newly_done or mp.status == "failed":
-                self._acceptance_text[m.id] = self.run_acceptance(m)
                 self.qa_milestone(m)
             if self.s.status != "running":
                 return
@@ -802,6 +801,9 @@ class Builder:
             mp.qa_rounds += 1
             session_rounds += 1
             # Integrate (7) and Verify (8): deterministic checks first, then the QA agent reads their results.
+            # The locked suites run again every round: after a fix (or a test repair) QA must read the new result,
+            # not the one from before it.
+            self._acceptance_text[m.id] = self.run_acceptance(m)
             ver = verify.VerifyResult()
             if self.cfg.verify:
                 ver.extend(verify.integrate(self, m, items, mp.qa_rounds))
