@@ -692,3 +692,20 @@ def test_the_locked_suites_run_again_every_qa_round_so_qa_never_reads_stale_resu
     b.worker_for = lambda agent: worker
     b.qa_milestone(b.s.backlog.milestones[0])
     assert seen and "FAILED" in seen[0]
+
+
+def test_a_design_may_mention_the_website_it_integrates_with_but_not_build_one():
+    from agentic_sdlc.artifacts.architecture import AppFeature, Component
+    from agentic_sdlc.guardrails import architecture as ag
+    from agentic_sdlc.registry.profiles import Profile
+
+    g = Profile.load("flutter_nestjs_netsuite").guardrails
+
+    def errors(overview):
+        arch = type("A", (), {"overview": overview, "app_features": [AppFeature(name="Browse", screens=["List"], state_management="Riverpod")],
+                              "components": [Component(name="App", technology="Flutter", responsibility="r")]})()
+        c = type("C", (), {"g": g, "arch": arch})()
+        return [e for e in ag.a2_platform(c) if "targets" in e]
+
+    assert errors("A Flutter app that reads the NetSuite SuiteCommerce website through our API.") == []
+    assert errors("A Flutter app plus a responsive website client for desktop browsers.")

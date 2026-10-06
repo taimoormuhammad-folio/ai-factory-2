@@ -196,7 +196,8 @@ guardrails:
     ]
   platform: flutter mobile (Android and iOS)
   platform_technology: flutter
-  forbidden_platforms: [web app, web client, website, desktop, electron, pwa]
+  # "website" alone is not forbidden here: the SuiteCommerce website is the system we integrate with, not a platform we build.
+  forbidden_platforms: [web app, web client, website client, web storefront, responsive website, desktop, electron, pwa]
   min_adrs: 3
   security_topics:
     authentication: [auth, token, session, credential]
