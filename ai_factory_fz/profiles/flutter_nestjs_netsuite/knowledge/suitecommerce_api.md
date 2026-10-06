@@ -1,3 +1,17 @@
+# SuiteCommerce sites differ: read this first
+
+- `{base}` is the site origin (SUITECOMMERCE_BASE_URL, e.g. https://litzen.folio3.site). `{app}` is the site's
+  application path, a SETTING (SUITECOMMERCE_APP_PATH): `store` on stanpro2.folio3.site, `scs` on litzen.folio3.site.
+  Every `{base}/{app}/...` URL below uses it; never hard-code `store`. The public items API `{base}/api/items`
+  (and `/api/personalized/items`) is at the origin on both sites.
+- The examples below were VERIFIED on stanpro2.folio3.site. On another site, anything under `{base}/{app}/` and every
+  extension (such as the Folio3 customer-pricing module) must be checked against that site before it is relied on:
+  a 404 means it is not there. Do not copy a path or a field from the examples without proof.
+- litzen.folio3.site, checked read-only: account `7227962_SB2`, site `n=2`, locale CA/CAD; `GET /api/items` works
+  (2,950 items; fields such as onlinecustomerprice_detail and itemimages_detail); services answer under `/scs/services/`
+  (Profile, LiveOrder), `/scs/logOut.ssp`, `/scs/shopping.ssp`, `/scs/checkout.ssp`. The customer-pricing extension is
+  NOT at `/scs_ss2/...` (404): there, use the customer price the items API returns for a signed-in session, and verify it.
+
 SuiteCommerce API reference (NetSuite SuiteCommerce Advanced 2025.1, B2B site). The backend is the only
 caller; the mobile app never talks to SuiteCommerce directly. Calls marked VERIFIED were tested against
 the sandbox site; everything else is the standard SuiteCommerce behaviour and must be treated as unverified.
@@ -19,7 +33,7 @@ Every request:
   when it is a business rule (e.g. "The minimum quantity for this item is 3.").
 
 Login (VERIFIED):
-- POST {base}/store/services/Account.Login.Service.ss?n={n}&c={c}
+- POST {base}/{app}/services/Account.Login.Service.ss?n={n}&c={c}
   JSON body {"email": "...", "password": "...", "redirect": "true"}.
 - GET instead of POST returns ERR_METHOD_NOT_ALLOWED. Wrong credentials return an error body.
 - Response {"user": {...}, "touchpoints": {...}}. Useful user fields: isLoggedIn "T", internalid (customer
@@ -27,11 +41,11 @@ Login (VERIFIED):
   precision}, paymentterms {internalid, name} (null = cannot check out on terms), custentity_f3_role (role
   id), custentity_f3_disallow_cart (true = may not use the cart), addressbook[] (internalid, addressee,
   addr1, addr2, city, state, zip, country, phone, defaultshipping, defaultbilling).
-- Session check: GET {base}/store/services/Profile.Service.ss?c={c}&n={n} returns isLoggedIn "T"/"F".
+- Session check: GET {base}/{app}/services/Profile.Service.ss?c={c}&n={n} returns isLoggedIn "T"/"F".
 - An expired or missing session is NOT an error on the cart (VERIFIED): the cart read returns an empty guest
   cart with HTTP 200, and pricing returns success false. So check the session (Profile isLoggedIn) before
   cart and checkout calls, or after an unexpectedly empty cart, and return 401 SESSION_EXPIRED when it is "F".
-- Logout: GET {base}/store/logOut.ssp?logoff=T&ckabandon=T with the session cookies.
+- Logout: GET {base}/{app}/logOut.ssp?logoff=T&ckabandon=T with the session cookies.
 
 Item list and search (VERIFIED, works with or without login):
 - GET {base}/api/personalized/items?c={c}&n={n}&country=CA&currency=CAD&language=en&pricelevel=5&use_pcv=F
@@ -50,7 +64,7 @@ Item detail (VERIFIED):
 - Images are absolute URLs on the site; some items have none (show a placeholder).
 
 Customer pricing (VERIFIED, needs a logged-in session):
-- GET {base}/store_ss2/extensions/Folio3/ItemPricingModule/1.0.0/Modules/ItemPricingModule/SuiteScript2/
+- GET {base}/{app}_ss2/extensions/Folio3/ItemPricingModule/1.0.0/Modules/ItemPricingModule/SuiteScript2/
   ItemPricingModule.Service.ss?action=getPricingForItems&c={c}&n={n}&customer={user.internalid}
   &subsidiaryId={user.subsidiary}&currencyId={user.currency.internalid}&f3RoleId={user.custentity_f3_role}
   &effectiveDate=&source=api&items=[{"id":197,"quantity":5,"uom":""}]   (items is URL-encoded JSON)
@@ -60,20 +74,20 @@ Customer pricing (VERIFIED, needs a logged-in session):
   (fail closed). Do the same: never show the public price as if it were the customer's price.
 
 Cart (VERIFIED). The cart lives in NetSuite per customer and is shared with the website:
-- Read: GET {base}/store/services/LiveOrder.Service.ss?c={c}&n={n}&internalid=cart
+- Read: GET {base}/{app}/services/LiveOrder.Service.ss?c={c}&n={n}&internalid=cart
   Response: lines[] {internalid (line id, e.g. "item197set297"), quantity, rate, rate_formatted, amount,
   amount_formatted, item {internalid, itemid, displayname, storedisplayname2, minimumquantity,
   maximumquantity, custitem_f3_incremental_quantity (quantity step), isinstock, itemimages_detail}},
   summary {itemcount, subtotal, subtotal_formatted, shippingcost, taxtotal, total, total_formatted},
   addresses[], shipaddress, billaddress, shipmethod, shipmethods[], paymentmethods[], options
   {custbody_f3_so_shipdate, custbody_f3_so_notes}. Cart rates already include the customer's pricing.
-- Add: POST {base}/store/services/LiveOrder.Line.Service.ss?c={c}&n={n}
+- Add: POST {base}/{app}/services/LiveOrder.Line.Service.ss?c={c}&n={n}
   body [{"item":{"internalid":197},"quantity":5,"options":[],"location":"","fulfillmentChoice":"ship",
   "freeGift":false}]. Adding an item already in the cart increases that line. Returns the whole cart.
-- Update quantity: PUT {base}/store/services/LiveOrder.Line.Service.ss?c={c}&n={n}&internalid={line id}
+- Update quantity: PUT {base}/{app}/services/LiveOrder.Line.Service.ss?c={c}&n={n}&internalid={line id}
   body {"item":{"internalid":197},"quantity":5,"internalid":"item197set297","options":[],"location":"",
   "fulfillmentChoice":"ship","freeGift":false}. Returns the whole cart.
-- Remove: DELETE {base}/store/services/LiveOrder.Line.Service.ss?c={c}&n={n}&internalid={line id}.
+- Remove: DELETE {base}/{app}/services/LiveOrder.Line.Service.ss?c={c}&n={n}&internalid={line id}.
   Returns the whole cart.
 - Business errors seen: "The minimum quantity for this item is 3." (below minimumquantity);
   "Invalid item reference key 149 for subsidiary 1." (item not sold to this customer's subsidiary).

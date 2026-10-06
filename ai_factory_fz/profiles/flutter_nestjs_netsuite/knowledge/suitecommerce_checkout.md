@@ -4,11 +4,11 @@ work here: NetSuite then returns no shipping methods and silently drops the bill
 
 Call sequence, all with the session cookies and X-Requested-With: XMLHttpRequest:
 1. Open the checkout context before any checkout call (load, update, submit):
-   GET {base}/store/services/CheckoutEnvironment.Service.ss?lang=en_CA&cur=CAD&X-SC-Touchpoint=checkout
+   GET {base}/{app}/services/CheckoutEnvironment.Service.ss?lang=en_CA&cur=CAD&X-SC-Touchpoint=checkout
    &cart-bootstrap=T
    The body is JavaScript, not JSON: ignore it, but keep every Set-Cookie it returns. Treat a failure here as
    non-fatal (log it and continue).
-2. Read the order: GET {base}/store/services/LiveOrder.Service.ss?c={c}&n={n}&cur={currency id}&internalid=cart
+2. Read the order: GET {base}/{app}/services/LiveOrder.Service.ss?c={c}&n={n}&cur={currency id}&internalid=cart
    cur is the currency's internal id (1 = CAD on this site), from configuration (SUITECOMMERCE_CURRENCY_ID).
    With the context open, shipmethods lists the real methods for the ship address, e.g.
    {"internalid":"40431","name":"2Ship","rate":0,"rate_formatted":"Free!"}, {"internalid":"3","name":"FedEx",
@@ -19,7 +19,7 @@ Call sequence, all with the session cookies and X-Requested-With: XMLHttpRequest
    options {custbody_f3_so_shipdate: "yyyy-mm-dd", custbody_f3_so_notes}, and "paymentmethods": [].
    Do not send the invoice payment method on updates: that is what made NetSuite drop the billing address.
 4. Ship date and notes are custom fields read by the website through the CustomFields extension:
-   GET {base}/store/extensions/SuiteCommerce/CustomFields/1.1.4/services/Checkout.Service.ss?c={c}&n={n}
+   GET {base}/{app}/extensions/SuiteCommerce/CustomFields/1.1.4/services/Checkout.Service.ss?c={c}&n={n}
    &fields=custbody_f3_so_shipdate,custbody_f3_so_notes
    (NOT VERIFIED: how the website writes them; keep sending them in options until confirmed.)
 5. Submit (NOT VERIFIED yet): POST the LiveOrder URL with the updated order plus

@@ -246,10 +246,12 @@ release:
     and set SUITECOMMERCE_BASE_URL=http://suitecommerce-mock:8080 and CHECKOUT_SUBMIT_ENABLED=true in the
     staging env file, plus test values for the other SuiteCommerce settings and a test-only
     SESSION_ENCRYPTION_KEY. Never point staging at the real site. infra/README.md must list the
-    production settings: SUITECOMMERCE_BASE_URL=https://stanpro2.folio3.site, SUITECOMMERCE_COMPANY_ID=628731_SB2,
-    SUITECOMMERCE_SITE_ID=2, SUITECOMMERCE_CATALOG_FILTER="Ascot : SG : Standard Products", a generated
-    SESSION_ENCRYPTION_KEY (never committed), and CHECKOUT_SUBMIT_ENABLED=true until a human has verified
-    order submission against the site.
+    production settings, taking the site values from the brief's "Site settings" section (never invent them):
+    SUITECOMMERCE_BASE_URL, SUITECOMMERCE_APP_PATH, SUITECOMMERCE_COMPANY_ID, SUITECOMMERCE_SITE_ID and, when the brief
+    gives one, SUITECOMMERCE_CATALOG_FILTER; a generated SESSION_ENCRYPTION_KEY (never committed), and
+    CHECKOUT_SUBMIT_ENABLED=false until a human has verified order submission against the site. The staging env file
+    also sets SUITECOMMERCE_APP_PATH (the mock accepts any app path). The server reads SUITECOMMERCE_APP_PATH
+    (default "store") and builds every service URL from it.
 
 # Running the app on an Android emulator (release phase device tests, and `uv run showcase`).
 device:

@@ -150,7 +150,7 @@ async function handleLogin(req, res) {
   const id = crypto.randomBytes(18).toString('base64url');
   sessions.set(id, { user: match.user, lastSeen: Date.now() });
   const shopper = crypto.randomBytes(12).toString('base64url');
-  send(res, 200, { user: match.user, touchpoints: { logout: '/store/logOut.ssp?logoff=T&ckabandon=T' } }, {
+  send(res, 200, { user: match.user, touchpoints: { logout: `/${process.env.MOCK_APP_PATH || 'store'}/logOut.ssp?logoff=T&ckabandon=T` } }, {
     'Set-Cookie': [
       `JSESSIONID=${id}; Path=/; HttpOnly; SameSite=Lax`,
       `jsid_own=${COMPANY_ID}; Path=/; HttpOnly`,
