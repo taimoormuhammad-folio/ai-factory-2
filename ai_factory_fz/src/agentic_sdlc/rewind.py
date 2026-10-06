@@ -12,6 +12,7 @@ from agentic_sdlc.state import ProjectState
 
 STEPS = {
     "plan": "re-plan: the PM plans milestones and estimates again (the WBS stays); G3 asks again",
+    "scaffold": "run the project setup steps again (steps whose result exists are skipped)",
     "build": "retry failed and blocked tasks (done tasks stay done)",
     "release": "verify and accept the release again from the start",
     "device-suite": "the Smoke tester rewrites the on-device suite",
@@ -42,6 +43,11 @@ def apply(state: ProjectState, root: Path, profile, step: str) -> str:
     r, b = state.release, state.build
     if step == "plan":
         state.plan, state.backlog = None, None
+    elif step == "scaffold":
+        b.scaffolded = []
+        for p in b.items.values():
+            if p.status in ("failed", "blocked"):
+                p.status, p.reason, p.attempts = "todo", "", 0
     elif step == "build":
         for p in b.items.values():
             if p.status in ("failed", "blocked"):

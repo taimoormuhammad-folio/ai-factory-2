@@ -141,6 +141,14 @@ components:
         creates: app/packages/api_client/pubspec.yaml
       - workdir: app
         run: flutter pub get
+      # The generated client uses built_value: its *.g.dart files must exist before anything compiles. Developers
+      # without a shell (the Claude Code path) cannot run build_runner themselves.
+      - workdir: app/packages/api_client
+        run: flutter pub get
+        creates: app/packages/api_client/pubspec.lock
+      - workdir: app/packages/api_client
+        run: dart run build_runner build --delete-conflicting-outputs
+        creates: app/packages/api_client/lib/**/*.g.dart
   infra:
     agent: deployment_engineer
     workdir: .

@@ -26,7 +26,8 @@ def scaffold(name: str, component: Component, workspace: Workspace, sandbox: San
     `templates_dir`: the profile's templates/ folder, for `template` steps."""
     log: list[str] = []
     for step in component.scaffold:
-        if step.creates and workspace.resolve(step.creates).exists():
+        if step.creates and (any(workspace.root.glob(step.creates)) if "*" in step.creates
+                             else workspace.resolve(step.creates).exists()):
             log.append(f"skip (exists): {step.creates}")
             continue
         if step.template and step.copy_to:

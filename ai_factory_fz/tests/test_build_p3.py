@@ -558,3 +558,19 @@ def test_the_secret_scan_skips_what_the_pipeline_writes_but_not_what_agents_writ
     errors = cg.dv2_secrets(ws, profile, ["reports/agent_transcript.jsonl", "evidence/_suites/backend.txt", "server/src/config.ts"])
     assert len(errors) == 1 and "server/src/config.ts" in errors[0]
     assert cg.is_pipeline_file("docs/spec.md") and cg.is_pipeline_file("gates/G1.gate") and not cg.is_pipeline_file("app/lib/main.dart")
+
+
+def test_scaffold_steps_can_be_skipped_by_a_glob_and_the_profiles_build_the_api_client(tmp_path):
+    from agentic_sdlc.build.scaffold import scaffold
+    from agentic_sdlc.registry.profiles import Component, Profile, ScaffoldStep
+    from agentic_sdlc.workspace import Workspace
+
+    ws = Workspace.create("sc", runs_dir=tmp_path)
+    ws.write_text("app/lib/model.g.dart", "// generated")
+    comp = Component(agent="a", workdir="app", runtime="flutter",
+                     scaffold=[ScaffoldStep(run="dart run build_runner build", creates="app/lib/**/*.g.dart")])
+    assert scaffold("frontend", comp, ws, FakeSandbox()) == ["skip (exists): app/lib/**/*.g.dart"]
+    for name in ("flutter_nestjs_ecommerce", "flutter_nestjs_netsuite"):
+        steps = [s.run for s in Profile.load(name).components["frontend"].scaffold]
+        assert "dart run build_runner build --delete-conflicting-outputs" in steps
+        assert steps.index("dart run build_runner build --delete-conflicting-outputs") > steps.index("flutter pub get")
