@@ -30,7 +30,8 @@ from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import code as code_guardrails
 from agentic_sdlc.registry.profiles import Profile
-from agentic_sdlc.release.device import DeviceError, Emulator, failed_test_files, harness_failure, subset_test_command
+from agentic_sdlc.release.device import (DeviceError, Emulator, failed_test_files, harness_failure, subset_test_command,
+                                         suspect_suite)
 from agentic_sdlc.release.contract import contract_diff
 from agentic_sdlc.release.staging import Staging, StagingError, http_get
 from agentic_sdlc.state import ProjectState
@@ -38,6 +39,8 @@ from agentic_sdlc.tools.sandbox_exec import SandboxRunner
 from agentic_sdlc.workspace import Workspace
 
 log = logging.getLogger(__name__)
+
+SMOKE_SUITE, DEVICE_SUITE = "smoke-suite", "device-suite"   # pseudo-components: problems for the suite's writer
 PHASE = "release"
 
 
@@ -144,7 +147,11 @@ class Releaser:
         """Run a job; if its guardrail check fails, re-run it once with the reasons. If it still
         fails, discard its uncommitted changes and stop the run. Returns the result or None."""
         if task_key in ("write_smoke_tests", "write_device_tests"):
-            inputs = {**inputs, "facts": facts.build(self.ws.root, self.profile, self.s.wbs)}
+            prev = inputs.get("previous_failures") or ""
+            inputs = {**inputs, "facts": facts.build(self.ws.root, self.profile, self.s.wbs),
+                      "previous_failures": ("YOUR PREVIOUS VERSION OF THIS SUITE WAS REJECTED: most journeys failed on its first "
+                                            "run, which means the tests were wrong (keys, ids, waits), not the app. Rewrite "
+                                            "it from the FACTS below. Failures:\n" + prev) if prev else ""}
         result = self._job(agent, task_key, inputs, model, workdir, runtime)
         if result is None or result.blocked:
             return result
@@ -298,7 +305,11 @@ class Releaser:
                              f"{harness_failure(test.output)}")
             return []
         r.device_passed, r.device_output = test.ok, test.output[-6000:]
+        r.device_passed_once = r.device_passed_once or test.ok
         r.device_failed_files = [] if test.ok else failed_test_files(test.output, app.workdir, dev.test_dir)
+        if not test.ok and r.suite_rewrites < 2 and suspect_suite(test.output, r.device_passed_once):
+            return [(DEVICE_SUITE, f"The on-device suite fails most of its journeys on its first run, so the TESTS "
+                                   f"are suspect (wrong keys, ids or waits), not the app:\n{test.output[-3000:]}")]
         after = self.emulator.screenshot(f"reports/device/round{r.rounds}/after_tests.png")
         if after:
             r.device_screenshots.append(after)
@@ -320,12 +331,38 @@ class Releaser:
         except Exception:        # no commit yet, no such folder: just build
             return ""
 
-    def _write_device_suite(self) -> bool:
+    def _rewrite_suite(self, which: str, failures: str) -> None:
+        """A suspect suite goes back to its writer with the failures; the app's developer is not involved."""
+        self.r.suite_rewrites += 1
+        if which == DEVICE_SUITE:
+            folder = self.ws.root / self.app.workdir / self.profile.device.test_dir
+            for f in folder.rglob("*.dart") if folder.exists() else []:
+                f.unlink()
+            self.r.device_suite, self.r.device_failed_files = None, []
+            self._write_device_suite(previous_failures=failures)
+        else:
+            self.r.smoke_suite = None
+            for f in self._smoke_files():
+                f.unlink()
+            result = self._guarded("smoke_tester", "write_smoke_tests", {"previous_failures": failures}, WorkItemResult,
+                                   self.api.workdir, "api", self._smoke_problems, "The smoke test suite")
+            if result is None or result.blocked:
+                self.stop(f"Smoke tester could not rewrite the smoke suite: {result.blocked_reason if result else 'agent failed'}")
+                return
+            self.r.smoke_suite = result
+            self.ws.commit("Release: smoke test suite rewritten (smoke_tester)")
+
+    def _smoke_files(self) -> list:
+        root = self.ws.root / self.api.workdir
+        return [p for p in root.rglob("*") if p.is_file() and "node_modules" not in p.parts
+                and "smoke" in str(p.relative_to(root)).lower() and p.suffix in (".ts", ".js")]
+
+    def _write_device_suite(self, previous_failures: str = "") -> bool:
         dev, app = self.profile.device, self.app
         result = self._guarded("smoke_tester", "write_device_tests", {
             "app_dir": app.workdir, "test_dir": dev.test_dir, "device_api_base": self.device_api_base,
             "test_command": dev.test_command.format(api_base=self.device_api_base, serial=self.emulator.serial),
-            "host_alias": dev.host_alias,
+            "host_alias": dev.host_alias, "previous_failures": previous_failures,
         }, WorkItemResult, app.workdir, app.runtime, self._device_suite_problems, "The on-device test suite")
         if result is None or result.blocked:
             self.stop(f"Smoke tester could not write the device tests: {result.blocked_reason if result else 'agent failed'}")
@@ -399,7 +436,10 @@ class Releaser:
                 return
             for component in dict.fromkeys(c for c, _ in problems):
                 texts = [t for c, t in problems if c == component]
-                self.fix("Staging verification found these problems. Fix them:\n" + "\n".join(texts), component)
+                if component in (SMOKE_SUITE, DEVICE_SUITE):
+                    self._rewrite_suite(component, "\n".join(texts))
+                else:
+                    self.fix("Staging verification found these problems. Fix them:\n" + "\n".join(texts), component)
 
     def _verify_round(self, first_in_session: bool = True) -> list[tuple[str, str]] | None:
         """One staging round. Returns (component, problem) pairs, or None if staging could not start."""
@@ -469,8 +509,13 @@ class Releaser:
         else:
             problems += [(api_c, f"[{b.severity}] {b.title}: {b.actual} (expected: {b.expected})")
                          for b in self.r.integration.blocking_bugs()]
+        self.r.smoke_passed_once = self.r.smoke_passed_once or bool(self.r.smoke_passed)
         if self.r.smoke_passed is False:
-            problems.append((api_c, f"Smoke tests failed against staging:\n{self.r.smoke_output[-3000:]}"))
+            if self.r.suite_rewrites < 2 and suspect_suite(self.r.smoke_output, self.r.smoke_passed_once):
+                problems.append((SMOKE_SUITE, f"The smoke suite fails most of its journeys on its first run, so the TESTS "
+                                              f"are suspect, not the API:\n{self.r.smoke_output[-3000:]}"))
+            else:
+                problems.append((api_c, f"Smoke tests failed against staging:\n{self.r.smoke_output[-3000:]}"))
         return problems + sandbox_problems + device_problems
 
     def _sandbox_round(self) -> list[tuple[str, str]]:

@@ -96,6 +96,9 @@ class ReleaseState(BaseModel):
     device_output: str = ""
     device_note: str = ""                         # why device checks were skipped, if they were
     device_screenshots: list[str] = Field(default_factory=list)
+    smoke_passed_once: bool = False               # the smoke suite has passed at least once (it is then trusted)
+    device_passed_once: bool = False              # same for the on-device suite
+    suite_rewrites: int = 0                       # suites sent back to their writer as suspect (limited)
     sandbox_passed: bool | None = None            # real-site sandbox check; None: not run (see sandbox_note)
     sandbox_note: str = ""
     apk_key: str = ""                             # app tree + API base of the last APK build: unchanged -> reuse the APK

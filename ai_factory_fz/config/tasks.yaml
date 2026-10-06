@@ -417,6 +417,8 @@ write_smoke_tests:
     Built so far (test only these):
     {built}
 
+    {previous_failures}
+
     {facts}
 
     How to work:
@@ -468,6 +470,8 @@ write_device_tests:
 
     Built so far (test only these):
     {built}
+
+    {previous_failures}
 
     {facts}
 

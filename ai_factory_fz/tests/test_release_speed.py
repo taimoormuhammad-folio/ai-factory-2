@@ -207,3 +207,45 @@ def test_a_real_journey_failure_still_goes_to_the_developer(tmp_path, prd, backl
     r, s, _ = _device_round(tmp_path, prd, backlog, em)
     problems = r._device_round()
     assert problems and s.release.device_passed is False
+
+
+# ---------- a suite that mostly fails on its first run is the tests' problem ----------
+
+def test_test_counts_are_read_from_flutter_and_vitest_summaries():
+    from agentic_sdlc.release.device import suspect_suite, test_counts
+
+    assert test_counts("05:40 +3 -11: Some tests failed.") == (3, 11)
+    assert test_counts("00:09 +8: All tests passed!") == (8, 0)
+    assert test_counts(" Tests  2 failed | 5 passed (7)") == (5, 2)
+    assert test_counts("no summary") is None
+    assert suspect_suite("05:40 +3 -11: Some tests failed.", ever_passed=False)
+    assert not suspect_suite("05:40 +3 -11: Some tests failed.", ever_passed=True)       # trusted suite: a real regression
+    assert not suspect_suite("00:09 +8 -1: Some tests failed.", ever_passed=False)       # one failure: probably the app
+    assert not suspect_suite("00:09 +0 -2: Some tests failed.", ever_passed=False)       # too few tests to judge
+
+
+def test_a_mostly_failing_first_device_run_goes_back_to_the_test_writer_not_the_developer(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    bad = (False, "05:40 +3 -11: ShopEase journeys [E]\n05:41 +3 -11: Some tests failed.")
+    em = TwoStageEmulator([bad, bad])
+    r, s, _ = _device_round(tmp_path, prd, backlog, em)
+    problems = r._device_round()
+    assert problems and problems[0][0] == "device-suite" and "TESTS are suspect" in problems[0][1]
+    s.release.device_passed_once = True                       # once trusted, the same output is a regression for the app
+    s.release.device_failed_files = []
+    problems = r._device_round()
+    assert problems and problems[0][0] == "frontend"
+
+
+def test_rewriting_a_suspect_device_suite_deletes_it_and_hands_the_writer_the_failures(tmp_path, prd, backlog):
+    from test_release import ScriptedWorker, releaser
+    from test_device import device_releaser
+
+    worker = ScriptedWorker()
+    r, s, ws = device_releaser(tmp_path, prd, backlog, worker, FakeEmulator())
+    ws.write_text("app/integration_test/old_test.dart", "testWidgets('x', (t) async {});")
+    s.release.device_suite = WorkItemResult(summary="old", checks_passed=True)
+    r._rewrite_suite("device-suite", "05:40 +3 -11: failed")
+    assert not (ws.root / "app/integration_test/old_test.dart").exists() and s.release.suite_rewrites == 1
+    job = [j for j in worker.jobs if j.task_key == "write_device_tests"][0]
+    assert "PREVIOUS VERSION OF THIS SUITE WAS REJECTED" in job.inputs["previous_failures"] and "FACTS" in job.inputs["facts"]

@@ -43,6 +43,31 @@ def harness_failure(output: str) -> str | None:
     return None
 
 
+def test_counts(output: str) -> tuple[int, int] | None:
+    """(passed, failed) from a test runner's summary: flutter ('01:17 +3 -11: ...') or vitest/jest ('Tests  3 failed | 2 passed')."""
+    import re
+
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    flutter = re.findall(r"\d+:\d+ \+(\d+)(?: ~\d+)?(?: -(\d+))?:", clean)
+    if flutter:
+        passed, failed = flutter[-1]
+        return int(passed), int(failed or 0)
+    m = re.search(r"Tests\s+(?:(\d+) failed)?(?:\s*\|\s*)?(?:(\d+) passed)?", clean)
+    if m and (m.group(1) or m.group(2)):
+        return int(m.group(2) or 0), int(m.group(1) or 0)
+    return None
+
+
+def suspect_suite(output: str, ever_passed: bool, minimum: int = 3) -> bool:
+    """A suite that has never passed and fails at least half of at least `minimum` tests is more likely badly written
+    than the whole app broken: its writer must look at it again, before a developer changes working code."""
+    counts = test_counts(output)
+    if ever_passed or counts is None:
+        return False
+    passed, failed = counts
+    return passed + failed >= minimum and failed * 2 >= passed + failed
+
+
 def failed_test_files(output: str, workdir: str, test_dir: str) -> list[str]:
     """Test files (relative to the app folder) that failed in a `flutter test` run, from its output lines such as
     "01:17 +3 -16: /workspace/app/integration_test/cart_test.dart: adds to cart [E]"."""
