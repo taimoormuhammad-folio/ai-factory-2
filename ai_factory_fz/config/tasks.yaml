@@ -350,6 +350,8 @@ write_acceptance_tests:
     Acceptance criteria to prove (one or more tests each; put the criterion id in the test name):
     {criteria}
 
+    {facts}
+
     How to work:
     {tooling}
 
@@ -415,6 +417,8 @@ write_smoke_tests:
     Built so far (test only these):
     {built}
 
+    {facts}
+
     How to work:
     {tooling}
 
@@ -464,6 +468,8 @@ write_device_tests:
 
     Built so far (test only these):
     {built}
+
+    {facts}
 
     How to work:
     {tooling}

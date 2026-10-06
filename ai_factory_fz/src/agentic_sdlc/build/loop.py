@@ -37,6 +37,7 @@ from agentic_sdlc.artifacts.wbs import _prefix as owned_prefix
 from agentic_sdlc.build.coders import Job, Worker
 from agentic_sdlc.build.scaffold import ScaffoldError, required_runtimes, scaffold
 from agentic_sdlc.build import verify
+from agentic_sdlc.build import facts
 from agentic_sdlc.build.services import (ServiceError, acceptance_database, environment_failure,
                                          run_acceptance_suite, transient_failure)
 from agentic_sdlc.guardrails import agents as agent_guardrails
@@ -631,7 +632,7 @@ class Builder:
             return True
         inputs = {"milestone": f"{m.id} {m.name}: {m.goal}", "component": name, "criteria": self._criteria(ac_ids),
                   "docs_dir": str(self.ws.root / "docs"), "folder": acc.dir, "command": acc.command,
-                  "runner_note": acc.note,
+                  "runner_note": acc.note, "facts": facts.build(self.ws.root, self.profile, self.s.wbs),
                   "mode": ("CATCH-UP: the code for these criteria already exists. Read it and write tests that prove each "
                            "criterion; the pipeline runs `" + acc.command + "` and requires it to PASS."
                            if expect_pass else

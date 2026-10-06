@@ -24,6 +24,7 @@ from typing import Any, Callable
 from agentic_sdlc.artifacts.architecture import CONTRACT_PATH
 from agentic_sdlc.artifacts.reports import QAReport, WorkItemResult
 from agentic_sdlc.build.coders import Job, Worker
+from agentic_sdlc.build import facts
 from agentic_sdlc.build.services import transient_failure
 from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
 from agentic_sdlc.guardrails import agents as agent_guardrails
@@ -142,6 +143,8 @@ class Releaser:
                  runtime: str | None, check: Callable[[Any], list[str]], what: str) -> Any:
         """Run a job; if its guardrail check fails, re-run it once with the reasons. If it still
         fails, discard its uncommitted changes and stop the run. Returns the result or None."""
+        if task_key in ("write_smoke_tests", "write_device_tests"):
+            inputs = {**inputs, "facts": facts.build(self.ws.root, self.profile, self.s.wbs)}
         result = self._job(agent, task_key, inputs, model, workdir, runtime)
         if result is None or result.blocked:
             return result
