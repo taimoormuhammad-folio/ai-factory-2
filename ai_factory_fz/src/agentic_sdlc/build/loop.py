@@ -495,7 +495,8 @@ class Builder:
                     self._discard(item, comp)
                     return "blocked", result, (
                         "needs an ownership change: the task keeps needing files it does not own, so the plan must "
-                        "give them to it (Architect: widen `owns`, then re-plan). Files: " + ", ".join(sorted(now)))
+                        "give them to it. Files: " + ", ".join(sorted(now)) + f". To allow it (G2 asks again): "
+                        f"uv run rewind {self.s.run_id} --widen {item.id} --paths " + " ".join(sorted(now)))
                 refused = now
                 output = "\n".join(violations)
                 problems = f"Guardrails rejected your change. Fix all of these:\n{output}"

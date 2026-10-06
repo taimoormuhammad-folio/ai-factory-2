@@ -179,6 +179,40 @@ def canary(argv: list[str] | None = None) -> None:
     raise SystemExit(verdict.exit_code)
 
 
+def rewind_cmd(argv: list[str] | None = None) -> None:
+    """Go back a step in a stopped run without editing state.json by hand."""
+    from agentic_sdlc import rewind as rw
+    from agentic_sdlc.registry.profiles import Profile
+    from agentic_sdlc.state import ProjectState
+
+    parser = argparse.ArgumentParser(description="Rewind a stopped run to an earlier step, keeping what is approved and built")
+    parser.add_argument("run_id")
+    parser.add_argument("--to", choices=list(rw.STEPS), help="; ".join(f"{k}: {v}" for k, v in rw.STEPS.items()))
+    parser.add_argument("--widen", metavar="TASK", help="give a task more owned paths (use with --paths); G2 asks again")
+    parser.add_argument("--paths", nargs="+", default=[], help="paths for --widen, e.g. app/lib/features/catalog/**")
+    args = parser.parse_args(argv)
+    if bool(args.to) == bool(args.widen):
+        raise SystemExit("Give exactly one of --to <step> or --widen <TASK> --paths ...")
+    ws = Workspace.open(args.run_id)
+    state = ProjectState.model_validate_json(ws.load_state_json())
+    if state.status == "running":
+        raise SystemExit("The run says it is running. Stop it first (or it crashed: resume it once, then rewind).")
+    profile = Profile.load(state.profile)
+    if args.widen:
+        if not args.paths:
+            raise SystemExit("--widen needs --paths")
+        workdirs = {n: c.workdir for n, c in profile.components.items()}
+        problems = rw.widen(state, ws.root, args.widen, args.paths, workdirs)
+        if problems:
+            raise SystemExit("Not widened:\n" + "\n".join(f"  - {p}" for p in problems))
+        message = f"{args.widen} now also owns {', '.join(args.paths)}"
+    else:
+        message = rw.apply(state, ws.root, profile, args.to)
+    ws.save_state(state)
+    ws.commit(f"Rewind: {message}")
+    print(f"{message}.\nContinue with:  uv run resume {args.run_id}")
+
+
 def mockups() -> None:
     """Draw the UI/UX designer's screen mockups for an existing run (docs/ui/), without re-running it."""
     from agentic_sdlc.flow import default_deps
