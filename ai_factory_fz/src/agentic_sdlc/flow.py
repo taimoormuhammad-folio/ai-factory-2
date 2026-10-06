@@ -614,11 +614,22 @@ class SDLCFlow(Flow[ProjectState]):
         return "release_ready"   # verified, or failed after all fix rounds: the human decides
 
     @router("release_ready")
+    def acceptance_phase(self) -> Literal["acceptance_ready", "stopped"]:
+        """The Acceptor: run every criterion against its locked test and keep the proof (evidence/AC-xx/)."""
+        if self._can_continue():
+            self._releaser().accept()
+        return "acceptance_ready" if self._can_continue() else "stopped"
+
+    @router("acceptance_ready")
     def release_gate(self) -> Literal["release_approved", "release_rejected", "stopped"]:
+        """G6: user acceptance, signed by the customer through the Product Owner."""
         n = self.state.release.rounds
-        docs = [f"reports/release_round{n}.md", "infra/README.md"]
-        return self._gate("release", self._releaser().gate_summary(), docs,
-                          lambda: self.state.release.reset_verification())
+        r = self.state.release
+        docs = ["docs/acceptance.md", "docs/uat-guide.md", f"reports/release_round{n}.md", "infra/README.md",
+                "evidence-manifest.sha256"]
+        summary = (f"{self._releaser().gate_summary()}\nAcceptance: {len(r.acceptance_met)} criteria met with evidence, "
+                   f"{len(r.acceptance_unmet)} not met ({', '.join(r.acceptance_unmet) or 'none'}).")
+        return self._gate("release", summary, docs, lambda: self.state.release.reset_verification())
 
     @listen("release_rejected")
     def revise_release(self) -> None:
@@ -628,9 +639,32 @@ class SDLCFlow(Flow[ProjectState]):
             self._releaser().fix_after_rejection(self.state.revision_notes("release"))
 
     @router("release_approved")
-    def production_phase(self) -> Literal["run_finished", "stopped"]:
+    def packaging_phase(self) -> Literal["release_packaged", "stopped"]:
+        """Artifacts, release notes and docs/release.md (deploy steps, rollback), tagged. Never deploys."""
         if self._can_continue():
-            self._releaser().production()
+            self._releaser().package()
+        return "release_packaged" if self.state.status == "running" else "stopped"
+
+    @router("release_packaged")
+    def golive_gate(self) -> Literal["production_approved", "production_rejected", "stopped"]:
+        """G7: the named approver signs the release. The pipeline ends 'ready to deploy'; `uv run deploy` deploys."""
+        r = self.state.release
+        summary = (f"Release {r.production_notes.split('.')[0].removeprefix('Tagged ')} is packaged. "
+                   f"{len(r.acceptance_met)} criteria met, {len(r.acceptance_unmet)} not met. Read docs/release.md "
+                   f"(deploy steps and rollback). Approving does not deploy: you run `uv run deploy {self.state.run_id}`.")
+        return self._gate("production", summary, ["docs/release.md", "reports/release_notes.md", "evidence-manifest.sha256"],
+                          lambda: None)
+
+    @listen("production_rejected")
+    def golive_rejected(self) -> None:
+        self._stop(f"G7 (go-live) was rejected: {self.state.revision_notes('production') or 'no reason given'}. "
+                   f"Fix what it names, then `uv run resume {self.state.run_id}`")
+
+    @router("production_approved")
+    def ready_to_deploy(self) -> Literal["run_finished", "stopped"]:
+        if self._can_continue():
+            self.state.release.production = "ready"
+            self._checkpoint("Release: ready to deploy (G6 and G7 approved)")
         return "run_finished" if self.state.status == "running" else "stopped"
 
     @listen(or_("run_finished", "stopped"))

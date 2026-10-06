@@ -145,6 +145,11 @@ release:
   local_start: node dist/main.js
   smoke_command: npm run test:smoke
   package_commands: [npm ci, npm run build]
+  # Shown to the approver at G7 (docs/release.md). Generic on purpose: the pipeline does not know your infrastructure.
+  rollback_steps:
+    - "API: redeploy the previous release tag (see reports/release_notes.md of that run) with the same production command."
+    - "App: keep the previous signed build available and stop the staged rollout of this one."
+    - "Database: this profile's migrations are not reversed automatically; restore from the pre-deploy backup if a migration ran."
 
 # Running the app on an Android emulator (release phase device tests, and `uv run showcase`).
 device:

@@ -37,7 +37,8 @@ from agentic_sdlc.artifacts.wbs import _prefix as owned_prefix
 from agentic_sdlc.build.coders import Job, Worker
 from agentic_sdlc.build.scaffold import ScaffoldError, required_runtimes, scaffold
 from agentic_sdlc.build import verify
-from agentic_sdlc.build.services import ServiceError, acceptance_database, environment_failure, transient_failure
+from agentic_sdlc.build.services import (ServiceError, acceptance_database, environment_failure,
+                                         run_acceptance_suite, transient_failure)
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import code as code_guardrails
 from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
@@ -670,13 +671,7 @@ class Builder:
 
     def run_suite(self, comp: Component, acc) -> SandboxResult:
         """Run a component's acceptance suite, inside its throwaway services (e.g. a PostgreSQL)."""
-        with acceptance_database(self.sandbox, acc.database) as env:
-            host = bool(env)             # the database listens on the host's localhost
-            for command in (acc.database.prepare if acc.database else []):
-                prep = self.sandbox.run_trusted(comp.runtime, comp.workdir, command, env=env, host_network=host)
-                if not prep.ok:
-                    raise ServiceError(f"`{command}` failed: {prep.output[-400:]}")
-            return self.sandbox.run_trusted(comp.runtime, comp.workdir, acc.command, env=env, host_network=host)
+        return run_acceptance_suite(self.sandbox, comp, acc)
 
     def run_acceptance(self, m: Milestone) -> str:
         """Run every locked acceptance suite of the milestone's components; the result goes to QA."""

@@ -283,21 +283,31 @@ def test_staging_start_failure_is_handed_to_developer_once(tmp_path, prd, backlo
     assert "missing env JWT_SECRET" in fix.inputs["problems"]
 
 
-def test_production_packages_and_tags(tmp_path, prd, backlog):
-    r, s, ws = releaser(tmp_path, prd, backlog, ScriptedWorker())
-    r.production()
+def test_packaging_tags_and_writes_the_release_plan_with_rollback(tmp_path, prd, backlog):
+    r, s, ws = releaser(tmp_path, prd, backlog, ScriptedWorker(), cfg={"production_command": "./deploy.sh"})
+    r.profile.release.rollback_steps = ["Redeploy the previous tag"]
+    r.package()
     assert s.release.production == "packaged"
+    plan = (ws.root / "docs" / "release.md").read_text()
+    assert "uv run deploy" in plan and "`./deploy.sh`" in plan and "1. Redeploy the previous tag" in plan
     assert "release-" in s.release.production_notes
     from git import Repo
     assert any(t.name.startswith("release-") for t in Repo(ws.root).tags)
     assert "## Included" in (ws.root / "reports" / "release_notes.md").read_text()
 
 
-def test_production_command_runs_and_failure_stops(tmp_path, prd, backlog):
-    r, s, ws = releaser(tmp_path, prd, backlog, ScriptedWorker(), cfg={"production_command": "sh -c 'echo deployed; exit 3'"})
-    r.production()
-    assert s.release.production == "failed" and s.status == "stopped"
-    assert "deployed" in (ws.root / "reports" / "production_deploy.log").read_text()
+def test_the_release_plan_flags_a_missing_rollback_and_a_missing_deploy_command(tmp_path, prd, backlog):
+    r, s, ws = releaser(tmp_path, prd, backlog, ScriptedWorker())
+    r.profile.release.rollback_steps = []
+    r.package()
+    plan = (ws.root / "docs" / "release.md").read_text()
+    assert "No rollback steps are defined" in plan and "No production command is configured" in plan
+
+
+def test_packaging_never_runs_the_production_command(tmp_path, prd, backlog):
+    r, s, ws = releaser(tmp_path, prd, backlog, ScriptedWorker(), cfg={"production_command": "sh -c 'touch DEPLOYED'"})
+    r.package()
+    assert not (ws.root / "DEPLOYED").exists() and s.release.production == "packaged"
 
 
 def test_contract_diff_ignores_infrastructure_endpoints():

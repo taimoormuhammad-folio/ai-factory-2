@@ -219,13 +219,16 @@ def test_full_flow_through_release_gate_to_production(tmp_path, canned):
     from test_release import passing_integration
 
     worker = ScriptedWorker({"integration_review": [passing_integration()]})
-    flow = _release_flow(tmp_path, canned, ["y", "", "y", "", "y", ""], worker)
+    flow = _release_flow(tmp_path, canned, ["y", "", "y", "", "y", "", "y", ""], worker)
     flow.kickoff(inputs={"run_id": "rr", "brief": "shop"})
     s = flow.state
     assert s.status == "completed", s.stop_reason
     assert [(g.gate, g.approved) for g in s.gate_history] == [
-        ("prd", True), ("architecture", True), ("estimate", True), ("ui", True), ("release", True)]
-    assert s.release.verified and s.release.production == "packaged"
+        ("prd", True), ("architecture", True), ("estimate", True), ("ui", True), ("release", True), ("production", True)]
+    assert s.release.verified and s.release.production == "ready"          # approved, never deployed by the pipeline
+    root = tmp_path / "rr"
+    assert (root / "docs" / "acceptance.md").is_file() and (root / "docs" / "release.md").is_file()
+    assert (root / "evidence-manifest.sha256").is_file()
     assert "## Release" in (tmp_path / "rr" / "reports" / "run_summary.md").read_text()
 
 
@@ -234,13 +237,13 @@ def test_rejected_release_goes_to_developer_and_is_reverified(tmp_path, canned):
     from test_release import passing_integration
 
     worker = ScriptedWorker({"integration_review": [passing_integration(), passing_integration()]})
-    flow = _release_flow(tmp_path, canned, ["y", "", "y", "", "n", "Checkout total ignores tax", "y", ""], worker)
+    flow = _release_flow(tmp_path, canned, ["y", "", "y", "", "n", "Checkout total ignores tax", "y", "", "y", ""], worker)
     flow.kickoff(inputs={"run_id": "rj", "brief": "shop"})
     s = flow.state
     assert s.status == "completed", s.stop_reason
     fixes = [j for j in worker.jobs if j.task_key == "fix_work_item" and j.phase == "release"]
     assert len(fixes) == 1 and "Checkout total ignores tax" in fixes[0].inputs["problems"]
-    assert s.release.rounds == 2 and s.release.production == "packaged"
+    assert s.release.rounds == 2 and s.release.production == "ready"
 
 
 def test_scope_rules_reach_the_planning_prompts(tmp_path, canned):

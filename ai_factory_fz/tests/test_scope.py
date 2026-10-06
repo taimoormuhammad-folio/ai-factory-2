@@ -23,7 +23,8 @@ def test_demo_pipeline_is_small_and_complete():
     s = Scope.from_pipeline(p)
     assert s.max_work_items <= 6 and s.max_milestones <= 2
     assert all(p["phases"].values())
-    assert p["gates"] == {"prd": True, "architecture": True, "estimate": True, "ui": True, "merge": True, "release": True}
+    assert p["gates"] == {"prd": True, "architecture": True, "estimate": True, "ui": True, "merge": True, "release": True,
+                    "production": True}
     assert p["gate_mode"] == "console"
     text = s.rules_text()
     assert "at most 4 user stories" in text

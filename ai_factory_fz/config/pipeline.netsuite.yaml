@@ -76,6 +76,7 @@ gates:
   ui: true             # G4 UI design approval (customer, through the Product Owner)
   merge: true         # G5 merge approval (developer of record, with a risk note)
   release: true      # G6 UAT sign-off (customer, through the Product Owner)
+  production: true   # G7 go-live approval (named approver; the run then ends ready to deploy)
 
 # Risk tier L | M | H (the intake can set it per run). Tier L may waive the design gate
 # (gates.architecture_waiver_at_tier_l) and is required for gate_mode auto.

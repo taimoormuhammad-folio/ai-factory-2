@@ -53,6 +53,17 @@ class ServiceError(RuntimeError):
     pass
 
 
+def run_acceptance_suite(sandbox, comp, acc):
+    """Run a component's acceptance suite inside its throwaway services (e.g. a PostgreSQL)."""
+    with acceptance_database(sandbox, acc.database) as env:
+        host = bool(env)             # the database listens on the host's localhost
+        for command in (acc.database.prepare if acc.database else []):
+            prep = sandbox.run_trusted(comp.runtime, comp.workdir, command, env=env, host_network=host)
+            if not prep.ok:
+                raise ServiceError(f"`{command}` failed: {prep.output[-400:]}")
+        return sandbox.run_trusted(comp.runtime, comp.workdir, acc.command, env=env, host_network=host)
+
+
 @contextmanager
 def acceptance_database(sandbox, db: AcceptanceDatabase | None) -> Iterator[dict[str, str]]:
     """Yield the environment (e.g. {"DATABASE_URL": ...}) for the suite; {} when no database is needed or

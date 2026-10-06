@@ -101,13 +101,17 @@ class ReleaseState(BaseModel):
     verified: bool = False                        # staging, integration, smoke (and device) passed
     failed: bool = False                          # fix rounds used up with problems left: the release gate (G6) decides
     open_problems: list[list[str]] = Field(default_factory=list)  # [component, problem] from the last round
-    production: Literal["todo", "packaged", "deployed", "failed"] = "todo"
+    production: Literal["todo", "packaged", "ready", "deployed", "failed"] = "todo"   # ready: G6 and G7 approved
     production_notes: str = ""
+    acceptance_met: list[str] = Field(default_factory=list)       # criteria with evidence (evidence/AC-xx/)
+    acceptance_unmet: list[str] = Field(default_factory=list)     # criteria without a passing test or evidence
+    evidence_manifest: str = ""                                   # sha256 of evidence-manifest.sha256 itself
 
     def reset_verification(self) -> None:
         self.contract_issues, self.integration = [], None
         self.smoke_passed, self.smoke_output, self.verified, self.failed = None, "", False, False
         self.device_passed, self.device_output, self.device_note, self.device_screenshots = None, "", "", []
+        self.acceptance_met, self.acceptance_unmet, self.evidence_manifest = [], [], ""
 
 
 class ProjectState(FlowState):
@@ -149,8 +153,9 @@ class ProjectState(FlowState):
         """Something changed after release verification/approval: verify again and ask again."""
         self.release.reset_verification()
         self.release.production, self.release.production_notes = "todo", ""
-        if self.gate_approved("release"):
-            self.gate_history.append(GateDecision(gate="release", approved=False, decided_by="system", feedback=reason))
+        for gate in ("release", "production"):
+            if self.gate_approved(gate):
+                self.gate_history.append(GateDecision(gate=gate, approved=False, decided_by="system", feedback=reason))
 
     def revision_notes(self, gate: str) -> str:
         """Feedback from the latest human rejection of this gate, if it came after the last approval."""

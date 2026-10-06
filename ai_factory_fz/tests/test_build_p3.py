@@ -281,7 +281,9 @@ def test_the_suite_runs_inside_the_throwaway_database(tmp_path, prd, profile, mo
         seen.append(db)
         yield {"DATABASE_URL": "postgresql://app:app@localhost:40000/app"}
 
-    monkeypatch.setattr(loop, "acceptance_database", fake_db)
+    from agentic_sdlc.build import services
+
+    monkeypatch.setattr(services, "acceptance_database", fake_db)
 
     class Sandbox(FakeSandbox):
         def run_trusted(self, runtime, workdir, command, env=None, host_network=False, timeout_s=None):

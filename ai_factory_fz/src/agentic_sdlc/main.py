@@ -116,6 +116,47 @@ def approve(argv: list[str] | None = None, input_fn=input, is_tty=None) -> None:
     print(f"{gid} {verdict} by {decision.approver}. Continue the run with:  uv run resume {args.run_id}")
 
 
+def deploy(argv: list[str] | None = None, input_fn=input, is_tty=None) -> None:
+    """Deploy an approved release to production. Only the person who approved G7, at an interactive terminal."""
+    from datetime import datetime
+
+    from agentic_sdlc.gates import files as gate_files
+    from agentic_sdlc.release import deploy as deploying
+    from agentic_sdlc.settings import load_config
+    from agentic_sdlc.state import ProjectState
+
+    parser = argparse.ArgumentParser(description="Deploy a release that G6 and G7 approved")
+    parser.add_argument("run_id")
+    parser.add_argument("--as", dest="approver", required=True, help="Your name; must be the person who approved G7")
+    args = parser.parse_args(argv)
+    if not (is_tty if is_tty is not None else sys.stdin.isatty()):
+        raise SystemExit("Deployment is started by a person at an interactive terminal; run this yourself.")
+    if os.environ.get("CLAUDECODE") or os.environ.get("SDLC_AGENT"):
+        raise SystemExit("This looks like an agent session; production is deployed by people in their own terminal.")
+    bad_name = gate_files.approver_problem(args.approver)
+    if bad_name:
+        raise SystemExit(bad_name)
+    ws = Workspace.open(args.run_id)
+    state = ProjectState.model_validate_json(ws.load_state_json())
+    release_cfg = (load_config(state.pipeline or "pipeline").get("release") or {}) if state.pipeline else {}
+    command = (release_cfg.get("production_command") or "").strip()
+    found = deploying.problems(state, ws.root, args.approver, command)
+    if found:
+        raise SystemExit("Not deploying:\n" + "\n".join(f"  - {p}" for p in found))
+    print(f"Run {args.run_id}: G6 and G7 approved, evidence intact.\nAbout to run in {ws.root}:\n  {command}")
+    if input_fn("Type DEPLOY to run it: ").strip() != "DEPLOY":
+        raise SystemExit("Cancelled; nothing was run.")
+    ok, log_text = deploying.run(ws.root, command, release_cfg.get("production_timeout_s", 1800))
+    ws.write_text("reports/production_deploy.log", f"{datetime.now().isoformat()} by {args.approver}\n$ {command}\n\n{log_text}")
+    state.release.production = "deployed" if ok else "failed"
+    state.release.production_notes += f"\nDeployed by {args.approver}." if ok else f"\nDeployment by {args.approver} failed."
+    ws.save_state(state)
+    ws.commit("Production deployment " + ("succeeded" if ok else "FAILED"), ["reports"])
+    print(("Deployed." if ok else "Deployment FAILED; see reports/production_deploy.log. Roll back with docs/release.md."))
+    if not ok:
+        raise SystemExit(1)
+
+
 def mockups() -> None:
     """Draw the UI/UX designer's screen mockups for an existing run (docs/ui/), without re-running it."""
     from agentic_sdlc.flow import default_deps

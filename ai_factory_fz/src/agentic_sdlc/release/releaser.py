@@ -534,10 +534,20 @@ class Releaser:
                 f"{sum(p.status == 'done' for p in self.s.build.items.values())} work items; not built: "
                 f"{sum(p.status != 'done' for p in self.s.build.items.values())}.")
 
-    # ---------- production ----------
+    # ---------- acceptance, packaging and the release plan (G6, G7) ----------
 
-    def production(self) -> None:
-        if self.r.production in ("packaged", "deployed"):
+    def accept(self) -> None:
+        """Proof per acceptance criterion (evidence/AC-xx/), the acceptance report, the UAT guide and the manifest."""
+        from agentic_sdlc.build.services import run_acceptance_suite
+        from agentic_sdlc.release.acceptance import Acceptor
+
+        Acceptor(self.s, self.ws, self.profile, lambda comp, acc: run_acceptance_suite(self.sandbox, comp, acc),
+                 checkpoint=self.checkpoint).accept()
+
+    def package(self) -> None:
+        """Build the release artifacts, write release.md (what ships, how to deploy, how to roll back) and tag.
+        Never deploys: `uv run deploy` does, run by the named approver after G6 and G7."""
+        if self.r.production in ("packaged", "ready", "deployed"):
             return
         notes = []
         for cmd in self.profile.release.package_commands:
@@ -549,24 +559,32 @@ class Releaser:
             notes.append(f"ran `{cmd}`")
         tag = "release-" + datetime.now().strftime("%Y%m%d-%H%M%S")
         self.ws.write_text("reports/release_notes.md", self.release_notes(tag))
-        self.ws.commit(f"Release notes for {tag}")
+        self.ws.write_text("docs/release.md", self.release_plan(tag))
+        self.ws.commit(f"Release plan and notes for {tag}")
         self.ws.tag(tag)
         self.r.production, self.r.production_notes = "packaged", f"Tagged {tag}. " + "; ".join(notes)
+        self.checkpoint(f"Release: packaged as {tag}")
 
+    def release_plan(self, tag: str) -> str:
+        """docs/release.md, read by the approver at G7: what ships, the exact steps, and how to undo it."""
+        rel, r = self.profile.release, self.r
         command = (self.cfg.get("production_command") or "").strip()
-        if command:
-            proc = subprocess.run(shlex.split(command), cwd=self.ws.root, capture_output=True, text=True,
-                                  timeout=self.cfg.get("production_timeout_s", 1800), env=dict(os.environ))
-            output = (proc.stdout + proc.stderr)[-4000:]
-            self.ws.write_text("reports/production_deploy.log", output)
-            if proc.returncode != 0:
-                self.r.production = "failed"
-                self.r.production_notes += f"\nProduction command failed (exit {proc.returncode})."
-                self.stop(f"Production deployment failed; see reports/production_deploy.log")
-                return
-            self.r.production = "deployed"
-            self.r.production_notes += "\nProduction command succeeded."
-        self.checkpoint(f"Release: {self.r.production}")
+        rollback = rel.rollback_steps
+        met = f"{len(r.acceptance_met)} met, {len(r.acceptance_unmet)} not met"
+        return "\n".join([
+            f"# Release plan {tag}", "", f"Product: {self.s.prd.title}", "",
+            "## What ships", self.built_summary(), "", "## Not included", self.not_built_summary(), "",
+            "## Evidence", f"Acceptance criteria: {met}. See docs/acceptance.md and evidence-manifest.sha256 "
+            f"(manifest hash {r.evidence_manifest[:16] or 'n/a'}).", "",
+            "## Deploy", *(["The approver runs, from the project root:", "", f"    uv run deploy {self.s.run_id} --as \"<your name>\"",
+                           "", f"which executes `{command}` with the approver's own environment."]
+                          if command else ["**No production command is configured** (`release.production_command` in the pipeline "
+                                           "config). Deployment is then done by hand from the packaged artifacts."]),
+            "", "## Roll back",
+            *([f"{i}. {step}" for i, step in enumerate(rollback, 1)] if rollback else
+              ["**No rollback steps are defined for this profile** (`release.rollback_steps`). The approver must agree "
+               "how to undo this release before approving G7."]),
+            "", "## Production settings", rel.staging_notes or "(none listed)", ""])
 
     def release_notes(self, tag: str) -> str:
         r = self.r

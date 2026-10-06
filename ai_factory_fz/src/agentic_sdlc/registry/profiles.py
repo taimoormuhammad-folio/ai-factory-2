@@ -88,6 +88,7 @@ class ReleaseConfig(BaseModel):
     smoke_command: str = ""                    # runs the smoke suite; gets SMOKE_BASE_URL
     package_commands: list[str] = Field(default_factory=list)  # build release artifacts (API component)
     staging_notes: str = ""                    # extra instructions for the Deployment engineer
+    rollback_steps: list[str] = Field(default_factory=list)   # how to undo a deployment; shown at G7 (none: flagged)
 
 
 class DeviceConfig(BaseModel):
