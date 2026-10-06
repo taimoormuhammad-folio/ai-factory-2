@@ -112,10 +112,18 @@ def dv1_tests(ws: Workspace, comp: Component, profile: Profile, files: list[str]
     return errors
 
 
+def is_pipeline_file(path: str) -> bool:
+    """Written by the pipeline (prompts and transcripts, reports, evidence, gate files), never by an agent's task."""
+    return (path in PIPELINE_FILES or path.startswith((*PIPELINE_FOLDERS, *SCOPE_INFRA_PREFIXES, "evidence/"))
+            or path == "evidence-manifest.sha256")
+
+
 def dv2_secrets(ws: Workspace, profile: Profile, files: list[str]) -> list[str]:
     ignore = profile.guardrails.get("secret_scan_ignore", [])
     errors = []
     for path in files:
+        if is_pipeline_file(path):         # a transcript quotes the prompts (e.g. an example connection string)
+            continue
         p = ws.root / path
         if any(fnmatch.fnmatch(path, pat) for pat in ignore) or not p.is_file() or p.stat().st_size > 2_000_000:
             continue

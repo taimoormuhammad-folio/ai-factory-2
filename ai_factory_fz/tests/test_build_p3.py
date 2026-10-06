@@ -544,3 +544,17 @@ def test_an_empty_api_credit_balance_is_a_usage_limit_not_a_code_failure():
     assert is_usage_limit("Error code: 400 - {'message': 'Your credit balance is too low to access the Anthropic API.'}")
     assert is_usage_limit("You exceeded your current quota: insufficient_quota")
     assert not is_usage_limit("Error code: 400 - invalid_request_error: messages.0.content: Field required")
+
+
+def test_the_secret_scan_skips_what_the_pipeline_writes_but_not_what_agents_write(tmp_path, profile):
+    from agentic_sdlc.guardrails import code as cg
+    from agentic_sdlc.workspace import Workspace
+
+    ws = Workspace.create("sec", runs_dir=tmp_path)
+    leak = "DATABASE_URL=postgresql://app:hunter2secret@db:5432/app\n"
+    ws.write_text("reports/agent_transcript.jsonl", leak)       # a prompt quoting the profile's example URL
+    ws.write_text("evidence/_suites/backend.txt", leak)
+    ws.write_text("server/src/config.ts", leak)                 # an agent hard-coding it: still caught
+    errors = cg.dv2_secrets(ws, profile, ["reports/agent_transcript.jsonl", "evidence/_suites/backend.txt", "server/src/config.ts"])
+    assert len(errors) == 1 and "server/src/config.ts" in errors[0]
+    assert cg.is_pipeline_file("docs/spec.md") and cg.is_pipeline_file("gates/G1.gate") and not cg.is_pipeline_file("app/lib/main.dart")
