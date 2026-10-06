@@ -628,3 +628,43 @@ def test_a_suite_that_does_not_compile_fails_the_last_task_of_the_component_not_
     ok, text = b.run_own_acceptance(b.items["WI-002"])                  # the last one: the suite must load
     assert not ok and "does not compile or load" in text and "ProductBuilder" in text
     assert b._has_test_lines("  ✓ AC-01 lists (3 ms)") and not b._has_test_lines("Failed to load x\n00:00 +0 -1")
+
+
+# ---------- locked tests that are themselves defective ----------
+
+def test_only_the_test_writer_repairs_a_defective_locked_test_and_the_repair_is_recorded(tmp_path, prd, profile):
+    from agentic_sdlc.artifacts.reports import Bug
+
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    sandbox.results_for["npm run test:acceptance"] = [SandboxResult(exit_code=1, output="  ✕ AC-01 lists products\n")]
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True, guard_rules={"DV1", "DV2", "DV3"}))
+    b.ws.write_text("server/test/acceptance/support.ts", "broken import")
+    s.build.locked_tests = {"server/test/acceptance/support.ts": "oldhash"}
+    worker = FileWorker(b.ws.root, {"repair_acceptance_tests": lambda j: {"server/test/acceptance/support.ts": "import ok"}}, None)
+    b.worker_for = lambda agent: worker
+    bug = Bug(id="BUG-001", work_item_id="WI-001", title="support.ts misses an import", severity="major", steps="s",
+              expected="e", actual="a", locked_test_defect=True)
+    left = b.repair_locked_tests(b.s.backlog.milestones[0], [bug])
+    assert left == []
+    job = [j for j in worker.jobs if j.task_key == "repair_acceptance_tests"][0]
+    assert job.agent_key == "test_writer" and job.policy["locked"] == [] and "BUG-001" in job.inputs["bugs"]
+    assert (b.ws.root / "server/test/acceptance/support.ts").read_text() == "import ok"
+    assert s.build.locked_tests["server/test/acceptance/support.ts"] != "oldhash"        # re-locked with the new content
+    assert len(s.build.test_repairs) == 1 and "M1/backend: server/test/acceptance/support.ts (BUG-001)" in s.build.test_repairs[0]
+
+
+def test_ordinary_bugs_and_repairs_beyond_the_limit_go_to_the_developers(tmp_path, prd, profile):
+    from agentic_sdlc.artifacts.reports import Bug
+
+    profile = with_acceptance(profile)
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])],
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True))
+    plain = Bug(id="BUG-002", work_item_id="WI-001", title="t", severity="major", steps="s", expected="e", actual="a")
+    defect = plain.model_copy(update={"id": "BUG-003", "locked_test_defect": True})
+    s.build.test_repairs = ["M1/backend: x (BUG-001): r", "M1/backend: y (BUG-001): r"]       # already repaired twice
+    left = b.repair_locked_tests(b.s.backlog.milestones[0], [plain, defect])
+    assert [x.id for x in left] == ["BUG-002", "BUG-003"]

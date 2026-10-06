@@ -547,7 +547,9 @@ class SDLCFlow(Flow[ProjectState]):
                            "status": self.state.build.item(w).status, "commit": (self.state.build.item(w).commit or "")[:8]}
                           for w in m.work_item_ids]})
         ws.write_text("docs/package.md", ws.doc_header("code_reviewer", ["docs/review.md"]) + package_markdown(
-            self.state.run_id, milestones, coverage_markdown(uncovered(self.state.prd, self.state.build.acceptance))))
+            self.state.run_id, milestones, coverage_markdown(uncovered(self.state.prd, self.state.build.acceptance))
+            + ("\n### Locked tests repaired by the Test Writer during the build\n\n"
+               + "\n".join(f"- {r}" for r in self.state.build.test_repairs) + "\n" if self.state.build.test_repairs else "")))
 
     @router(or_("build_done", "revise_merge"))
     def merge_gate(self) -> Literal["merge_approved", "merge_rejected", "stopped"]:

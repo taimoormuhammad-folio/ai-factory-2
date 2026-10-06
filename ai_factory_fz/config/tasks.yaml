@@ -306,6 +306,9 @@ qa_milestone:
     Report each real defect as a bug with the work item it belongs to. Severity: blocker (breaks
     the milestone goal or security), major (an acceptance criterion is not met), minor (other).
     Set milestone_id to {milestone_id}. passed is true only when there are no blocker or major bugs.
+    If the cause of a failing locked test is THE TEST ITSELF (it does not compile, a support file misses
+    an import, it contradicts the contract or the UI design), set locked_test_defect to true on that bug:
+    builders may not edit locked tests, so it goes to the Test Writer instead of a developer.
 
     Locked acceptance tests (written before the build; a failing one means its criterion is not met,
     report it as a major bug for the task that serves the criterion):
@@ -375,6 +378,25 @@ write_acceptance_tests:
       override. Prefer names the UI design (ui-design.md) already uses.
     - If a criterion cannot be tested as written, set blocked and say why instead of guessing.
   expected_output: The tests written, each with its criterion id, file and test name.
+
+repair_acceptance_tests:
+  agent: test_writer
+  description: |
+    QA found that locked acceptance tests of component {component} are themselves defective. The builders may not
+    edit them; you may, once, to repair exactly what is wrong (a missing import, a wrong name, a helper that does not
+    compile) without weakening what a test proves.
+
+    Defects reported:
+    {bugs}
+
+    {facts}
+
+    The tests are in {folder}/ and run with `{command}`. Rules:
+    - Change only files in {folder}/, and only what the defects require. Every criterion keeps its test and the same
+      checks; never delete or loosen an assertion.
+    - After your change the suite must COMPILE and load (it may still fail for features that are not built yet).
+    - Report what you changed and why.
+  expected_output: What you repaired in the locked tests and why.
 
 # ---------- release phase (M4) ----------
 

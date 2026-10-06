@@ -72,6 +72,7 @@ class MilestoneProgress(BaseModel):
 class BuildState(BaseModel):
     scaffolded: list[str] = Field(default_factory=list)  # components whose project exists
     locked_tests: dict[str, str] = Field(default_factory=dict)        # acceptance test file -> sha256
+    test_repairs: list[str] = Field(default_factory=list)             # locked tests repaired by the Test Writer (shown at G5)
     acceptance: dict[str, AcceptanceSuite] = Field(default_factory=dict)   # "<milestone>/<component>" -> suite
     items: dict[str, ItemProgress] = Field(default_factory=dict)
     milestones: dict[str, MilestoneProgress] = Field(default_factory=dict)

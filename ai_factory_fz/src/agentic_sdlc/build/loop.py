@@ -941,7 +941,72 @@ class Builder:
             log.error("%s", e)
             return None
 
+    def repair_locked_tests(self, m: Milestone, bugs: list[Bug]) -> list[Bug]:
+        """Bugs whose cause is a locked test itself go to the Test Writer (the only role that may change locked tests),
+        at most twice per milestone, and each repair is listed at the merge gate. Returns the bugs it could not
+        handle, for the developers."""
+        left: list[Bug] = []
+        by_comp: dict[str, list[Bug]] = {}
+        for b in bugs:
+            item = self.items.get(b.work_item_id) or self.items[m.work_item_ids[0]]
+            comp = self.profile.components.get(item.component)
+            if b.locked_test_defect and comp and comp.acceptance:
+                by_comp.setdefault(item.component, []).append(b)
+            else:
+                left.append(b)
+        for name, comp_bugs in by_comp.items():
+            done_here = sum(1 for r in self.s.build.test_repairs if r.startswith(f"{m.id}/{name}:"))
+            if done_here >= 2 or not self.can_continue():
+                left += comp_bugs
+                continue
+            if not self._repair_suite(m, name, comp_bugs):
+                left += comp_bugs
+        return left
+
+    def _repair_suite(self, m: Milestone, name: str, bugs: list[Bug]) -> bool:
+        comp = self.profile.components[name]
+        acc = comp.acceptance
+        text = "\n".join(f"- {b.id} [{b.severity}] {b.title}\n  Steps: {b.steps}\n  Actual: {b.actual}" for b in bugs)
+        inputs = {"component": name, "bugs": text, "folder": acc.dir, "command": acc.command,
+                  "facts": facts.build(self.ws.root, self.profile, self.s.wbs)}
+        policy = {"owns": [acc.dir], "workdir": comp.workdir, "locked": [], "also_allowed": ["reports/"]}
+        before = {p: h for p, h in self.s.build.locked_tests.items() if p.startswith(acc.dir.rstrip("/") + "/")}
+        job = Job(PHASE, "test_writer", "repair_acceptance_tests", inputs, WorkItemResult, comp.workdir, comp.runtime,
+                  policy=policy)
+        try:
+            result = self.record(self.worker_for("test_writer").run(job))
+        except UsageLimitError as e:
+            self.stop(f"{e}. Resume the run after the limit resets or credit is added (uv run resume <run_id>).")
+            return False
+        except PhaseError as e:
+            log.warning("Test Writer could not repair the locked tests of %s: %s", name, e)
+            return False
+        with self._git:
+            problems = code_guardrails.check_changes(self.ws, comp, self.profile, {"DV2", "DV3"}, owns=[acc.dir], locked={})
+        if not problems:
+            try:
+                run = self.run_suite(comp, acc)
+            except ServiceError as e:
+                problems = [f"suite could not run: {e}"]
+            else:
+                if not self._has_test_lines(run.output) and not run.ok:
+                    problems = ["the repaired suite still does not compile or load:\n" + run.output[-800:]]
+        if problems:
+            log.warning("Locked-test repair for %s rejected: %s", name, "; ".join(problems)[:400])
+            code_guardrails.discard_changes(self.ws, acc.dir)
+            return False
+        self._lock(acc.dir)
+        changed = sorted(p for p, h in self.s.build.locked_tests.items() if p.startswith(acc.dir.rstrip("/") + "/")
+                         and before.get(p) != h)
+        self.s.build.test_repairs.append(
+            f"{m.id}/{name}: {', '.join(changed) or 'no file changed'} ({', '.join(b.id for b in bugs)}): {result.summary[:200]}")
+        self.ws.commit(f"Tests: locked tests of {m.id}/{name} repaired by the Test Writer ({', '.join(b.id for b in bugs)})",
+                       [comp.workdir, "tests.lock", "docs", "reports"])
+        self._save(f"Tests: {m.id}/{name} repaired")
+        return True
+
     def fix_bugs(self, m: Milestone, bugs: list[Bug]) -> None:
+        bugs = self.repair_locked_tests(m, bugs)
         by_item: dict[str, list[Bug]] = {}
         for b in bugs:
             by_item.setdefault(b.work_item_id if b.work_item_id in self.items else m.work_item_ids[0], []).append(b)

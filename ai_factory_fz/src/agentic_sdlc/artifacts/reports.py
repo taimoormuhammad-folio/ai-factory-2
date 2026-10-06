@@ -24,6 +24,8 @@ class Bug(BaseModel):
     steps: str = Field(description="How to reproduce, or where in the code")
     expected: str
     actual: str
+    locked_test_defect: bool = Field(default=False, description="True when the cause is a locked acceptance test itself "
+                                     "(it does not compile, misses imports, contradicts the contract), not the code")
 
 
 class QAReport(BaseModel):
