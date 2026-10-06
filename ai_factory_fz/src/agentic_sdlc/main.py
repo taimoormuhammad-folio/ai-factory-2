@@ -28,13 +28,34 @@ def _print_result(flow: SDLCFlow) -> None:
     print(f"Summary:   {RUNS_DIR / s.run_id / 'reports' / 'run_summary.md'}")
 
 
+def _run_flow(flow: SDLCFlow, inputs: dict) -> SDLCFlow:
+    """Kick off a flow; a failure inside it ends as a recorded stop (status, reason, commit), never as a run that
+    silently stays 'running' with nothing saved."""
+    try:
+        flow.kickoff(inputs=inputs)
+    except Exception as e:                      # noqa: BLE001 - any failure of a step must be recorded
+        s = flow.state
+        if s.run_id and s.status == "running":
+            s.status = "stopped"
+            s.stop_reason = f"A step failed: {str(e)[:1500]}\nFix the cause, then: uv run resume {s.run_id}"
+            try:
+                ws = Workspace.open(s.run_id)
+                ws.save_state(s)
+                ws.commit(f"Run stopped: {type(e).__name__}")
+            except Exception:                   # noqa: BLE001 - recording is best effort
+                pass
+        _print_result(flow)
+        raise SystemExit(1) from e
+    return flow
+
+
 def start_run(brief_path: Path, profile: str, run_id: str | None = None, pipeline: str = "pipeline") -> SDLCFlow:
     brief = brief_path.read_text(encoding="utf-8")
     if not (CONFIG_DIR / f"{pipeline}.yaml").exists():
         raise SystemExit(f"No pipeline config at {CONFIG_DIR / (pipeline + '.yaml')}")
     run_id = run_id or new_run_id(brief_path.stem)
     flow = SDLCFlow()
-    flow.kickoff(inputs={"run_id": run_id, "profile": profile, "brief": brief, "pipeline": pipeline})
+    _run_flow(flow, {"run_id": run_id, "profile": profile, "brief": brief, "pipeline": pipeline})
     _print_result(flow)
     return flow
 
@@ -42,7 +63,7 @@ def start_run(brief_path: Path, profile: str, run_id: str | None = None, pipelin
 def resume_run(run_id: str) -> SDLCFlow:
     ws = Workspace.open(run_id)
     flow = SDLCFlow(restore_json=ws.load_state_json())
-    flow.kickoff(inputs={"run_id": run_id})
+    _run_flow(flow, {"run_id": run_id})
     _print_result(flow)
     return flow
 

@@ -574,3 +574,39 @@ def test_scaffold_steps_can_be_skipped_by_a_glob_and_the_profiles_build_the_api_
         steps = [s.run for s in Profile.load(name).components["frontend"].scaffold]
         assert "dart run build_runner build --delete-conflicting-outputs" in steps
         assert steps.index("dart run build_runner build --delete-conflicting-outputs") > steps.index("flutter pub get")
+
+
+def test_express_is_fine_under_nestjs_but_not_on_its_own():
+    from agentic_sdlc.artifacts.architecture import Component
+    from agentic_sdlc.guardrails import architecture as ag
+
+    class C:
+        g = {"forbidden_stack": ["express", "django"], "required_stack": []}
+
+        def __init__(self, tech):
+            self.arch = type("A", (), {"components": [Component(name="API", technology=tech, responsibility="r")]})()
+
+    assert ag.a1_stack(C("NestJS (TypeScript) on the Express adapter")) == []
+    assert ag.a1_stack(C("Express.js server")) and ag.a1_stack(C("NestJS and Django"))
+
+
+def test_a_step_that_raises_leaves_a_recorded_stop_not_a_silent_running_run(tmp_path, monkeypatch):
+    import pytest
+
+    from agentic_sdlc import main
+    from agentic_sdlc.state import ProjectState
+    from agentic_sdlc.workspace import Workspace
+
+    ws = Workspace.create("crash", runs_dir=tmp_path)
+
+    class Flow:
+        state = ProjectState(run_id="crash", status="running")
+
+        def kickoff(self, inputs):
+            raise RuntimeError("Task 'design_architecture' failed on all models")
+
+    monkeypatch.setattr(Workspace, "open", classmethod(lambda cls, run_id, runs_dir=None: ws))
+    with pytest.raises(SystemExit):
+        main._run_flow(Flow(), {"run_id": "crash"})
+    saved = ProjectState.model_validate_json(ws.load_state_json())
+    assert saved.status == "stopped" and "failed on all models" in saved.stop_reason and "uv run resume crash" in saved.stop_reason

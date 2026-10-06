@@ -102,6 +102,8 @@ def a1_stack(c: Context) -> list[str]:
     errors = []
     for comp in c.arch.components:
         bad = [t for t in forbidden if _has_term(comp.technology, t)]
+        if _has_term(comp.technology, "nestjs"):
+            bad = [t for t in bad if t != "express"]       # NestJS runs on Express by default: not a second framework
         if bad:
             errors.append(f"A1: component '{comp.name}' uses {', '.join(bad)}, which is outside this profile's stack")
     techs = " ".join(comp.technology for comp in c.arch.components)
