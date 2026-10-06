@@ -345,7 +345,7 @@ class SDLCFlow(Flow[ProjectState]):
                        for name, c in profile.components.items()}
             self.state.wbs = self._record(planning.design_wbs(
                 self.deps.runner, self.state.prd, self.state.architecture, workdirs, profile.stack_summary(),
-                notes, layout=profile.layout_summary(), allowed=allowed))
+                notes, layout=profile.layout_summary(), allowed=allowed, entry_points=profile.entry_points()))
             ws.save_artifact("wbs", self.state.wbs, agent="architect", inputs=["docs/spec.md", "docs/design.md"])
             self._checkpoint("Design: work breakdown structure")
 
@@ -389,7 +389,8 @@ class SDLCFlow(Flow[ProjectState]):
             return
         ws, wbs = self.deps.workspace, self.state.wbs
         self.state.plan = self._record(planning.plan_delivery(
-            self.deps.runner, self.state.prd, wbs, self.state.revision_notes("estimate"), self._scope))
+            self.deps.runner, self.state.prd, wbs, self.state.revision_notes("estimate"), self._scope,
+            entry_points=self.deps.profile.entry_points()))
         self.state.backlog = to_backlog(wbs, self.state.plan)
         header = ws.doc_header("project_manager", ["docs/spec.md", "docs/wbs.md"])
         ws.write_text("docs/plan.md", header + self.state.plan.to_markdown(wbs))

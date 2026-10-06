@@ -123,6 +123,10 @@ guardrails:
   money_fields: [price, amount, total, subtotal, cost, fee, tax, discount]
   min_adrs: 3
   # Agent guardrails (DV3: copies of the approved contract must not drift)
+  # Files that start each component; its first task owns them so every milestone ends in something that runs.
+  entry_points:
+    backend: [server/src/main.ts, server/src/app.module.ts]
+    frontend: [app/lib/main.dart]
   contract_copies:
     docs/api-contract.yaml: [server/openapi.yaml, apps/api/openapi.yaml, app/openapi.yaml]
     docs/schema.prisma: [server/prisma/schema.prisma, apps/api/prisma/schema.prisma]

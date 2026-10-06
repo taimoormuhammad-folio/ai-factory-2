@@ -30,7 +30,9 @@ class DeliveryPlan(BaseModel):
     risks: list[str] = Field(default_factory=list, description="Delivery risks and how the plan handles them")
     schedule_notes: str = Field(default="", description="Sequencing and timeline in a few sentences")
 
-    def errors(self, wbs: Wbs) -> list[str]:
+    def errors(self, wbs: Wbs, entry_points: dict[str, list[str]] | None = None) -> list[str]:
+        """`entry_points`: component -> files that start it (the app's main, the API's module). A milestone that
+        builds a component's tasks must already have an owner of those files, or its tests cannot run end to end."""
         errors: list[str] = []
         task_ids = [t.id for t in wbs.tasks]
         planned = [tid for m in self.milestones for tid in m.task_ids]
@@ -47,6 +49,25 @@ class DeliveryPlan(BaseModel):
                 if t.id in position and dep in position and position[dep] > position[t.id]:
                     errors.append(f"{t.id} ({self.milestones[position[t.id]].id}) depends on {dep}, which is in a "
                                   f"later milestone ({self.milestones[position[dep]].id})")
+        errors += self.entry_point_errors(wbs, entry_points or {})
+        return errors
+
+    def entry_point_errors(self, wbs: Wbs, entry_points: dict[str, list[str]]) -> list[str]:
+        from agentic_sdlc.guardrails.code import owned
+
+        errors: list[str] = []
+        milestone_of = {tid: i for i, m in enumerate(self.milestones) for tid in m.task_ids}
+        for i, m in enumerate(self.milestones):
+            for component in sorted({t.component for t in map(wbs.task, m.task_ids) if t}):
+                for path in entry_points.get(component, []):
+                    owners = [t for t in wbs.tasks if t.component == component and owned(path, t.owns) and t.id in milestone_of]
+                    if owners and min(milestone_of[t.id] for t in owners) > i:
+                        first = min(owners, key=lambda t: milestone_of[t.id])
+                        errors.append(
+                            f"{m.id} builds {component} tasks, but the entry point {path} is first owned by {first.id} in "
+                            f"{self.milestones[milestone_of[first.id]].id}, so {m.id} cannot run or be tested end to end. "
+                            f"Schedule {first.id} (and what it needs) in {m.id} or earlier, so every milestone ends in "
+                            f"something that starts")
         return errors
 
     def to_markdown(self, wbs: Wbs) -> str:

@@ -62,6 +62,10 @@ design_wbs:
       parallel). A task owns every file it changes, including shared wiring it must edit (e.g. the
       backend's app module registration, the app's router); dependency manifests are always allowed.
       Keep tasks small (about a day of work). Components without commands (infra) verify with "-".
+    - Entry points: the files that start a component are listed below. The component's FIRST task (its
+      project setup) owns them, so that after every milestone the app starts and its tests can run end to
+      end; later tasks add their routes or modules by editing those files (they list them in owns too).
+      {entry_points}
     - Coverage: every must-have acceptance criterion has a task; every API operation is implemented by
       a backend task; every data model is covered. App tasks that call an operation depend on the
       backend task that implements it. Project setup and infrastructure (Dockerfile, compose, CI) are
@@ -89,6 +93,9 @@ plan_delivery:
     Rules:
     - Milestones M1, M2... in delivery order, each ending in a testable slice; every task in exactly
       one milestone; a task never waits for a task in a later milestone.
+    - Every milestone must END IN SOMETHING THAT STARTS: when a milestone has tasks of a component, a
+      task of that milestone or an earlier one must own that component's entry-point files:
+      {entry_points}
     - Estimate every task in points (1-8) with complexity, risk and confidence (low/medium/high) and a
       one-line rationale naming what drives the size. Be honest about risk: new infrastructure,
       payments, auth and concurrency are higher risk.

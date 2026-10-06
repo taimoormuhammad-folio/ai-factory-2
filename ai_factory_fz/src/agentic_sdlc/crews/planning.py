@@ -73,7 +73,8 @@ def wbs_errors(wbs: Wbs, prd: PRD, architecture: ArchitectureDoc, workdirs: dict
 
 def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str],
                stack: str, revision_notes: str = "", layout: str = "",
-               allowed: dict[str, list[str]] | None = None) -> TaskResult[Wbs]:
+               allowed: dict[str, list[str]] | None = None,
+               entry_points: dict[str, list[str]] | None = None) -> TaskResult[Wbs]:
     """The Architect's work breakdown: packages -> small tasks, each owning paths with a verify command.
     `allowed`: component -> the command prefixes its verify command may use."""
     return runner.run(
@@ -87,6 +88,7 @@ def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, work
             "workdirs": "\n".join(
                 f"- {c}: {w}/ (verify with: {', '.join((allowed or {}).get(c, [])) or 'any listed command'})"
                 for c, w in workdirs.items()),
+            "entry_points": "\n".join(f"- {c}: {', '.join(ps)}" for c, ps in (entry_points or {}).items()) or "(none)",
             "revision_notes": revision_notes or "(none)",
         },
         Wbs,
@@ -95,13 +97,14 @@ def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, work
 
 
 def plan_delivery(runner: TaskRunner, prd: PRD, wbs: Wbs, revision_notes: str = "",
-                  scope: Scope | None = None) -> TaskResult[DeliveryPlan]:
-    """The Project manager sequences the WBS into milestones and estimates every task."""
+                  scope: Scope | None = None, entry_points: dict[str, list[str]] | None = None) -> TaskResult[DeliveryPlan]:
+    """The Project manager sequences the WBS into milestones and estimates every task.
+    `entry_points`: component -> the files that start it; each milestone must own them before building on them."""
     scope = scope or Scope()
     must_haves = prd.must_have_ids()
 
     def check(plan: DeliveryPlan) -> list[str]:
-        errors = plan.errors(wbs)
+        errors = plan.errors(wbs, entry_points)
         if not errors:
             backlog = to_backlog(wbs, plan)
             errors = backlog.validation_errors(must_haves) + scope.backlog_errors(backlog)
@@ -113,6 +116,7 @@ def plan_delivery(runner: TaskRunner, prd: PRD, wbs: Wbs, revision_notes: str = 
         {
             "prd": prd.to_markdown(),
             "wbs": wbs.to_markdown(),
+            "entry_points": "\n".join(f"- {c}: {', '.join(ps)}" for c, ps in (entry_points or {}).items()) or "(none)",
             "revision_notes": revision_notes or "(none)",
             "scope_rules": scope.rules_text(),
         },

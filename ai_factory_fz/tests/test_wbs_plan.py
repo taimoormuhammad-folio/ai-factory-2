@@ -88,3 +88,49 @@ def test_intake_front_matter_and_interview(tmp_path):
     meta, body = intake.parse(path.read_text())
     assert meta == {"title": "B2B store", "product_owner": "Pat Owner", "risk_tier": "M"}
     assert body.strip() == "Sell lighting to businesses."
+
+
+def test_a_milestone_must_end_in_something_that_starts(wbs, delivery_plan):
+    """The p3check plan: M1 builds app tasks, but the only task that owns main.dart is in M2."""
+    entry = {"frontend": ["app/lib/main.dart"], "backend": ["server/src/main.ts"]}
+    wbs.tasks[0].owns += ["server/src/main.ts"]                                   # backend entry owned in M1: fine
+    wbs.tasks[1].owns += ["app/lib/main.dart"]                                    # frontend entry owned by WI-002
+    delivery_plan.milestones = [PlannedMilestone(id="M1", name="Browse", goal="g", task_ids=["WI-001"]),
+                                PlannedMilestone(id="M2", name="Cart", goal="g", task_ids=["WI-002"])]
+    assert delivery_plan.errors(wbs, entry) == []                                 # M1 has no frontend tasks yet
+    wbs.tasks.append(WbsTask(id="WI-003", title="Catalog screens", description="d", package_id="E-01",
+                             component="frontend", story_ids=["US-001"], ac_ids=["AC-01"],
+                             owns=["app/lib/features/catalog/**"], verify="flutter test"))
+    delivery_plan.milestones[0].task_ids.append("WI-003")                         # app screens in M1, shell in M2
+    delivery_plan.estimates.append(TaskEstimate(task_id="WI-003", points=3, rationale="r"))
+    errors = delivery_plan.errors(wbs, entry)
+    assert len(errors) == 1 and "M1 builds frontend tasks, but the entry point app/lib/main.dart is first owned by " \
+        "WI-002 in M2" in errors[0] and "cannot run or be tested end to end" in errors[0]
+    delivery_plan.milestones = [PlannedMilestone(id="M1", name="All", goal="g", task_ids=["WI-001", "WI-002", "WI-003"])]
+    assert delivery_plan.errors(wbs, entry) == []                                 # the shell is in M1 now
+    assert delivery_plan.errors(wbs) == []                                        # no entry points configured: no check
+
+
+def test_the_profiles_name_each_components_entry_points():
+    from agentic_sdlc.registry.profiles import Profile
+
+    for name in ("flutter_nestjs_ecommerce", "flutter_nestjs_netsuite"):
+        assert Profile.load(name).entry_points() == {"backend": ["server/src/main.ts", "server/src/app.module.ts"],
+                                                     "frontend": ["app/lib/main.dart"]}
+
+
+def test_both_planning_prompts_get_the_entry_points(wbs, prd, architecture):
+    from agentic_sdlc.settings import load_config
+
+    seen = {}
+
+    class Runner:
+        def run(self, phase, key, inputs, model, guardrail=None):
+            seen[key] = inputs
+
+    entry = {"frontend": ["app/lib/main.dart"]}
+    planning.design_wbs(Runner(), prd, architecture, WORKDIRS, "stack", entry_points=entry)
+    planning.plan_delivery(Runner(), prd, wbs, entry_points=entry)
+    for key in ("design_wbs", "plan_delivery"):
+        assert "- frontend: app/lib/main.dart" in seen[key]["entry_points"]
+        assert "{entry_points}" in load_config("tasks")[key]["description"]

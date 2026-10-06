@@ -196,6 +196,10 @@ guardrails:
     secrets and configuration: [secret, environment variable, env var, config]
     session encryption: [encrypt]
   # Agent guardrails (DV3: copies of the approved contract must not drift)
+  # Files that start each component; its first task owns them so every milestone ends in something that runs.
+  entry_points:
+    backend: [server/src/main.ts, server/src/app.module.ts]
+    frontend: [app/lib/main.dart]
   contract_copies:
     docs/api-contract.yaml: [server/openapi.yaml, app/openapi.yaml]
   scope_also_allowed: [] # extra paths any coding item may change (e.g. [.github/])

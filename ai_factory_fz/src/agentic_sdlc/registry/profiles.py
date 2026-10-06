@@ -147,6 +147,10 @@ class Profile(BaseModel):
         lines.append(f"- {self.release.compose_file}, {self.release.env_file}: staging")
         return "\n".join(lines)
 
+    def entry_points(self) -> dict[str, list[str]]:
+        """component -> the files that start it (guardrails.entry_points in the profile)."""
+        return {k: list(v) for k, v in (self.guardrails.get("entry_points") or {}).items()}
+
     def layout_roots(self) -> set[str]:
         """Top-level folders of the layout (anything else is outside it)."""
         paths = [c.workdir for c in self.components.values()] + ["docs", self.release.compose_file]
