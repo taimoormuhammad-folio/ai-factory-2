@@ -58,6 +58,7 @@ release:
   staging_port: 3100
   startup_timeout_s: 90      # wait this long for the health endpoint
   fix_rounds: 2              # developer fix rounds when staging verification fails
+  sandbox_check: true        # also check the built API against the real SB2 site, read-only (needs infra/sandbox.env)
   # Your production deploy command, run from the run folder after the release gate (G6) approval
   # (e.g. "bash infra/deploy.sh"). Empty: package only (build, release notes, git tag).
   # Run the mobile app on an Android emulator against staging (needs `uv run setup-android` once).

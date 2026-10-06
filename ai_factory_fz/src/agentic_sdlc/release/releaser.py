@@ -426,6 +426,7 @@ class Releaser:
                 res = self.sandbox.run_trusted(self.api.runtime, self.api.workdir, rel.smoke_command,
                                                env={"SMOKE_BASE_URL": self.api_base_url}, host_network=True)
                 self.r.smoke_passed, self.r.smoke_output = res.ok, res.output[-6000:]
+            sandbox_problems = self._sandbox_round()
             device_problems = []
             if self.device_enabled:
                 api_green = (self.r.integration is not None and not self.r.integration.blocking_bugs()
@@ -446,7 +447,20 @@ class Releaser:
                          for b in self.r.integration.blocking_bugs()]
         if self.r.smoke_passed is False:
             problems.append((api_c, f"Smoke tests failed against staging:\n{self.r.smoke_output[-3000:]}"))
-        return problems + device_problems
+        return problems + sandbox_problems + device_problems
+
+    def _sandbox_round(self) -> list[tuple[str, str]]:
+        """The built API against the real third-party sandbox (read-only), when the profile and pipeline ask for it."""
+        cfg = self.profile.release.sandbox_check
+        if not (cfg and self.cfg.get("sandbox_check")):
+            return []
+        from agentic_sdlc.release.sandbox_check import SandboxCheck
+
+        result = SandboxCheck(self.ws.root, cfg, self.profile.release.compose_api_service).check()
+        self.r.sandbox_passed, self.r.sandbox_note = (result.passed if result.ran else None), result.note
+        if result.ran:
+            self.ws.write_text(f"reports/sandbox_round{self.r.rounds}.txt", result.output)
+        return [(self.profile.release.api_component, p) for p in result.problems]
 
     def _built_scope(self, issues: list[str]) -> list[str]:
         """Endpoints of unbuilt work are expected to be missing; only report extra endpoints and
@@ -530,7 +544,8 @@ class Releaser:
                 f"{'passed' if r.integration and r.integration.passed else 'n/a'}, smoke "
                 f"{'passed' if r.smoke_passed else 'n/a'}, on device "
                 f"{'passed' if r.device_passed else ('not run: ' + r.device_note if r.device_passed is None else 'failed')}"
-                f"{' (screenshots: ' + ', '.join(r.device_screenshots) + ')' if r.device_screenshots else ''}. Built: "
+                f"{' (screenshots: ' + ', '.join(r.device_screenshots) + ')' if r.device_screenshots else ''}"
+                f"{'. Real-site sandbox: ' + ('passed' if r.sandbox_passed else r.sandbox_note or 'failed') if r.sandbox_passed is not None or r.sandbox_note else ''}. Built: "
                 f"{sum(p.status == 'done' for p in self.s.build.items.values())} work items; not built: "
                 f"{sum(p.status != 'done' for p in self.s.build.items.values())}.")
 

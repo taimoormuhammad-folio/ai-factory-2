@@ -218,6 +218,11 @@ release:
   smoke_command: npm run test:smoke
   package_commands: [npm ci, npm run build]
   # Shown to the approver at G7 (docs/release.md). Generic on purpose: the pipeline does not know your infrastructure.
+  # The built API against the real SB2 site, read-only (order submission is forced off). Needs infra/sandbox.env, git-ignored.
+  sandbox_check:
+    checks:
+      - {path: /api/v1/health, expect: 200}
+      - {path: /api/docs-json, expect: 200}
   rollback_steps:
     - "API: redeploy the previous release tag (see reports/release_notes.md of that run) with the same production command."
     - "App: keep the previous signed build available and stop the staged rollout of this one."

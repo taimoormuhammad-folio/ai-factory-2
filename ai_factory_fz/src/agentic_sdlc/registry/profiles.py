@@ -75,6 +75,23 @@ class Component(BaseModel):
     scans: list[ScanStep] = Field(default_factory=list)
 
 
+class SandboxRequest(BaseModel):
+    path: str                                  # a GET, relative to the API's base URL
+    expect: int = 200                          # 0: any answer below 500 (reached and handled, e.g. 401 without a login)
+
+
+class SandboxCheckConfig(BaseModel):
+    """The built API against the real third-party sandbox, read-only (see release/sandbox_check.py)."""
+    compose_file: str = "infra/docker-compose.sandbox.yml"
+    env_file: str = "infra/sandbox.env"        # git-ignored; site URL and test account
+    project: str = "sdlc-sandbox-check"
+    port: int = 3200
+    health_path: str = "/api/v1/health"
+    startup_timeout_s: int = 120
+    checks: list[SandboxRequest] = Field(default_factory=list)
+    contract_gets: bool = True                 # also GET every parameter-free read in docs/api-contract.yaml (no 5xx allowed)
+
+
 class ReleaseConfig(BaseModel):
     api_component: str = "backend"            # component that serves the API
     api_prefix: str = ""                       # e.g. /api/v1
@@ -88,6 +105,7 @@ class ReleaseConfig(BaseModel):
     smoke_command: str = ""                    # runs the smoke suite; gets SMOKE_BASE_URL
     package_commands: list[str] = Field(default_factory=list)  # build release artifacts (API component)
     staging_notes: str = ""                    # extra instructions for the Deployment engineer
+    sandbox_check: SandboxCheckConfig | None = None   # real-site check, read-only; None: the profile has none
     rollback_steps: list[str] = Field(default_factory=list)   # how to undo a deployment; shown at G7 (none: flagged)
 
 

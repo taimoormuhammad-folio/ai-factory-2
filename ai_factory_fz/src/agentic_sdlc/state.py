@@ -96,6 +96,8 @@ class ReleaseState(BaseModel):
     device_output: str = ""
     device_note: str = ""                         # why device checks were skipped, if they were
     device_screenshots: list[str] = Field(default_factory=list)
+    sandbox_passed: bool | None = None            # real-site sandbox check; None: not run (see sandbox_note)
+    sandbox_note: str = ""
     apk_key: str = ""                             # app tree + API base of the last APK build: unchanged -> reuse the APK
     device_failed_files: list[str] = Field(default_factory=list)   # failing device test files, run first next round
     verified: bool = False                        # staging, integration, smoke (and device) passed
@@ -112,6 +114,7 @@ class ReleaseState(BaseModel):
         self.smoke_passed, self.smoke_output, self.verified, self.failed = None, "", False, False
         self.device_passed, self.device_output, self.device_note, self.device_screenshots = None, "", "", []
         self.acceptance_met, self.acceptance_unmet, self.evidence_manifest = [], [], ""
+        self.sandbox_passed, self.sandbox_note = None, ""
 
 
 class ProjectState(FlowState):
