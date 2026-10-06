@@ -16,6 +16,10 @@ class Runtime(BaseModel):
     # paths, e.g. Flutter), then give files it created back to the host user.
     run_as_root: bool = False
     env: dict[str, str] = Field(default_factory=dict)   # Docker mode only; container paths
+    # Docker mode only: named volumes ("name:/container/path") that outlive the container, so downloads such as
+    # the Android SDK parts and the Gradle cache are fetched once, not in every round and every run. A new volume
+    # is filled from the image's own content at that path the first time.
+    volumes: list[str] = Field(default_factory=list)
 
 
 class SandboxConfig(BaseModel):

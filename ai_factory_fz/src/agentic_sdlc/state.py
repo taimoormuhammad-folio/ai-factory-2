@@ -96,6 +96,8 @@ class ReleaseState(BaseModel):
     device_output: str = ""
     device_note: str = ""                         # why device checks were skipped, if they were
     device_screenshots: list[str] = Field(default_factory=list)
+    apk_key: str = ""                             # app tree + API base of the last APK build: unchanged -> reuse the APK
+    device_failed_files: list[str] = Field(default_factory=list)   # failing device test files, run first next round
     verified: bool = False                        # staging, integration, smoke (and device) passed
     failed: bool = False                          # fix rounds used up with problems left: the release gate (G6) decides
     open_problems: list[list[str]] = Field(default_factory=list)  # [component, problem] from the last round

@@ -170,9 +170,14 @@ sandbox:
       image: ghcr.io/cirruslabs/flutter:stable
       local_binary: flutter
       run_as_root: true            # the SDK writes to its root-owned cache
+      # Kept between rounds AND runs: the Android SDK parts Gradle downloads (NDK, platform, ~1 GB: 15 to 30 minutes
+      # at a slow connection, every release round before) and the Gradle cache.
+      volumes:
+        - sdlc-android-sdk:/opt/android-sdk-linux
+        - sdlc-gradle:/cache/gradle
       env:
         PUB_CACHE: /workspace/.pub-cache   # keep downloaded packages between commands
-        GRADLE_USER_HOME: /workspace/.gradle   # keep the Android build cache between commands
+        GRADLE_USER_HOME: /cache/gradle    # shared Gradle cache (the volume above)
         ANDROID_USER_HOME: /workspace/.android # one debug signing key per run (reinstalls keep working)
     openapi:
       image: openapitools/openapi-generator-cli:v7.10.0

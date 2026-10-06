@@ -343,3 +343,19 @@ def test_builders_are_told_which_locked_tests_to_read_first(tmp_path, prd, profi
     for key in ("implement_work_item", "fix_work_item"):
         needed = set(re.findall(r"\{(\w+)\}", load_config("tasks")[key]["description"]))
         assert "acceptance_files" in needed and needed - {"tooling"} <= set(given_inputs := worker.jobs[0].inputs), key
+
+
+def test_flutter_containers_keep_the_android_sdk_and_gradle_cache_between_runs(tmp_path):
+    from agentic_sdlc.registry.profiles import Profile
+    from agentic_sdlc.tools.sandbox_exec import SandboxMode, SandboxRunner
+    from agentic_sdlc.workspace import Workspace
+
+    for name in ("flutter_nestjs_ecommerce", "flutter_nestjs_netsuite"):
+        profile = Profile.load(name)
+        ws = Workspace.create("r", runs_dir=tmp_path)
+        cmd, _ = SandboxRunner(ws, profile.sandbox, SandboxMode.DOCKER).build_command("flutter", "app", ["flutter", "build", "apk"])
+        volumes = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-v"]
+        assert "sdlc-android-sdk:/opt/android-sdk-linux" in volumes and "sdlc-gradle:/cache/gradle" in volumes
+        assert "GRADLE_USER_HOME=/cache/gradle" in cmd
+        node, _ = SandboxRunner(ws, profile.sandbox, SandboxMode.DOCKER).build_command("node", "server", ["npm", "test"])
+        assert not any(v.startswith("sdlc-") for v in [node[i + 1] for i, a in enumerate(node) if a == "-v"])   # only Flutter

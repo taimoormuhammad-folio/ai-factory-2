@@ -63,6 +63,7 @@ release:
   # Run the mobile app on an Android emulator against staging (needs `uv run setup-android` once).
   device:
     enabled: true
+    only_when_api_green: true   # APK build, emulator and journeys only once the API passes (smoke, contract, integration)
     headless: true           # pipeline runs; `uv run showcase` opens a window
     boot_timeout_s: 420
   production_command: ""

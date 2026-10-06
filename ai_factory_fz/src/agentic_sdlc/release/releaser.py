@@ -28,7 +28,7 @@ from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import code as code_guardrails
 from agentic_sdlc.registry.profiles import Profile
-from agentic_sdlc.release.device import DeviceError, Emulator
+from agentic_sdlc.release.device import DeviceError, Emulator, failed_test_files, subset_test_command
 from agentic_sdlc.release.contract import contract_diff
 from agentic_sdlc.release.staging import Staging, StagingError, http_get
 from agentic_sdlc.state import ProjectState
@@ -207,10 +207,17 @@ class Releaser:
             return []
         fmt = {"api_base": self.device_api_base, "serial": self.emulator.serial}
         # Build before booting: a Gradle build next to a booting emulator starves it (it hangs).
-        build = self.emulator.build(dev.build_command.format(**fmt), app.workdir, timeout_s=dev.build_timeout_s)
-        if not build.ok:
-            r.device_passed, r.device_output = False, build.output[-6000:]
-            return [(dev.app_component, f"Building the app for the device failed:\n{build.output[-3000:]}")]
+        tree = self._app_tree()
+        key = f"{tree}|{self.device_api_base}" if tree else ""
+        if key and key == r.apk_key and self.ws.resolve(f"{app.workdir}/{dev.apk_path}").is_file():
+            log.info("The app is unchanged since the last build: reusing its APK")
+        else:
+            build = self.emulator.build(dev.build_command.format(**fmt), app.workdir, timeout_s=dev.build_timeout_s)
+            if not build.ok:
+                r.apk_key = ""
+                r.device_passed, r.device_output = False, build.output[-6000:]
+                return [(dev.app_component, f"Building the app for the device failed:\n{build.output[-3000:]}")]
+            r.apk_key = key
         window = not (self.cfg.get("device") or {}).get("headless", True)
         try:
             self.emulator.start(window=window)
@@ -244,8 +251,19 @@ class Releaser:
             r.device_note = "no on-device test suite yet; only launched the app"
             r.device_passed = True
             return []
-        test = self.emulator.run(dev.test_command.format(**fmt), app.workdir, timeout_s=dev.build_timeout_s)
+        command = dev.test_command.format(**fmt)
+        again = subset_test_command(command, dev.test_dir, r.device_failed_files) if r.device_failed_files else None
+        if again:        # last round's failures first: a fix that did not work shows in seconds, not after the whole suite
+            quick = self.emulator.run(again, app.workdir, timeout_s=dev.build_timeout_s)
+            if not quick.ok:
+                r.device_passed, r.device_output = False, quick.output[-6000:]
+                r.device_failed_files = failed_test_files(quick.output, app.workdir, dev.test_dir) or r.device_failed_files
+                return [(dev.app_component, f"On-device journey tests failed again against staging "
+                                            f"({self.device_api_base}; re-run of the previously failing tests "
+                                            f"only: {', '.join(r.device_failed_files)}):\n{quick.output[-3000:]}")]
+        test = self.emulator.run(command, app.workdir, timeout_s=dev.build_timeout_s)
         r.device_passed, r.device_output = test.ok, test.output[-6000:]
+        r.device_failed_files = [] if test.ok else failed_test_files(test.output, app.workdir, dev.test_dir)
         after = self.emulator.screenshot(f"reports/device/round{r.rounds}/after_tests.png")
         if after:
             r.device_screenshots.append(after)
@@ -253,6 +271,19 @@ class Releaser:
             return [(dev.app_component, f"On-device journey tests failed against staging "
                                         f"({self.device_api_base}):\n{test.output[-3000:]}")]
         return []
+
+    def _app_tree(self) -> str:
+        """Git tree id of the committed app folder, or '' when it has uncommitted changes (no reuse then)."""
+        from git import Repo
+
+        folder = self.app.workdir
+        try:
+            repo = Repo(self.ws.root)
+            if repo.git.status("--porcelain", "--", folder).strip():
+                return ""
+            return repo.git.rev_parse(f"HEAD:{folder}").strip()
+        except Exception:        # no commit yet, no such folder: just build
+            return ""
 
     def _write_device_suite(self) -> bool:
         dev, app = self.profile.device, self.app
@@ -384,7 +415,16 @@ class Releaser:
                 res = self.sandbox.run_trusted(self.api.runtime, self.api.workdir, rel.smoke_command,
                                                env={"SMOKE_BASE_URL": self.api_base_url}, host_network=True)
                 self.r.smoke_passed, self.r.smoke_output = res.ok, res.output[-6000:]
-            device_problems = self._device_round() if self.device_enabled else []
+            device_problems = []
+            if self.device_enabled:
+                api_green = (self.r.integration is not None and not self.r.integration.blocking_bugs()
+                             and self.r.smoke_passed is not False)
+                if api_green or not (self.cfg.get("device") or {}).get("only_when_api_green", True):
+                    device_problems = self._device_round()
+                else:
+                    # The expensive part (APK build, emulator, journeys) only pays off against a working API: the
+                    # fixes for these API problems would change what the app talks to anyway.
+                    self.r.device_note = "skipped this round: fix the API problems first (device tests need a working API)"
         finally:
             self.staging.stop()
         problems: list[tuple[str, str]] = []

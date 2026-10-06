@@ -29,6 +29,27 @@ DOWNLOAD_BASE = "https://dl.google.com/android/repository/"
 FALLBACK_CMDLINE_TOOLS = "commandlinetools-linux-16111833_latest.zip"
 
 
+def failed_test_files(output: str, workdir: str, test_dir: str) -> list[str]:
+    """Test files (relative to the app folder) that failed in a `flutter test` run, from its output lines such as
+    "01:17 +3 -16: /workspace/app/integration_test/cart_test.dart: adds to cart [E]"."""
+    import re
+
+    pattern = re.compile(rf"(?:/workspace/)?(?:{re.escape(workdir.strip('/'))}/)?({re.escape(test_dir.strip('/'))}/[\w./-]+\.dart):")
+    found: list[str] = []
+    for line in output.splitlines():
+        if "[E]" in line or "FAILED" in line:
+            found += [m.group(1) for m in pattern.finditer(line) if m.group(1) not in found]
+    return found
+
+
+def subset_test_command(command: str, test_dir: str, files: list[str]) -> str | None:
+    """`command` with its test folder replaced by just `files`; None when the folder is not a plain argument."""
+    parts = command.split()
+    if parts.count(test_dir) != 1 or not files:
+        return None
+    return " ".join(" ".join(files) if p == test_dir else p for p in parts)
+
+
 class DeviceError(RuntimeError):
     pass
 
