@@ -505,3 +505,34 @@ def test_catch_up_tests_that_fail_against_existing_code_are_sent_back(tmp_path, 
     b.write_acceptance_tests(b.s.backlog.milestones[0])
     tw = [j for j in worker.jobs if j.task_key == "write_acceptance_tests"]
     assert len(tw) == 2 and "fails although the code exists" in tw[1].feedback
+
+
+def test_a_block_after_files_were_written_goes_back_to_the_writer_with_the_file_list(tmp_path, prd, profile):
+    from agentic_sdlc.artifacts.tests import AcceptanceSuite
+
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    sandbox.results_for["npm run test:acceptance"] = [SandboxResult(exit_code=1, output="1 failing")]
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True, guard_rules={"DV1", "DV2", "DV3"}))
+    answers = [AcceptanceSuite(tests=[], blocked=True, blocked_reason="no input given"), suite_for(None)]
+    worker = FileWorker(b.ws.root, ACCEPTANCE_FILE, lambda job: answers.pop(0))
+    b.worker_for = lambda agent: worker
+    b.write_acceptance_tests(b.s.backlog.milestones[0])
+    tw = [j for j in worker.jobs if j.task_key == "write_acceptance_tests"]
+    assert len(tw) == 2 and "Do not block" in tw[1].feedback and "server/test/acceptance/ac-01.spec.ts" in tw[1].feedback
+    assert s.status != "stopped" and list(s.build.locked_tests) == ["server/test/acceptance/ac-01.spec.ts"]
+
+
+def test_a_block_with_no_files_written_still_stops_the_run_for_a_person(tmp_path, prd, profile):
+    from agentic_sdlc.artifacts.tests import AcceptanceSuite
+
+    profile = with_acceptance(profile)
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])],
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True))
+    worker = FileWorker(b.ws.root, {}, lambda job: AcceptanceSuite(tests=[], blocked=True, blocked_reason="AC-03 is untestable"))
+    b.worker_for = lambda agent: worker
+    b.write_acceptance_tests(b.s.backlog.milestones[0])
+    assert s.status == "stopped" and "AC-03 is untestable" in s.stop_reason

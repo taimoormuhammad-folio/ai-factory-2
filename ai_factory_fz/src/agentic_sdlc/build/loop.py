@@ -654,6 +654,15 @@ class Builder:
                 self.stop(f"Test Writer failed on {key}: {e}")
                 return False
             if suite.blocked:
+                written = sorted(p.relative_to(self.ws.root).as_posix() for p in (self.ws.root / acc.dir).rglob("*") if p.is_file())
+                if attempt == 1 and written:
+                    # Files exist, so the writer did the work and failed to report it (a weaker model giving up on the
+                    # final listing): tell it what it wrote instead of stopping the run for a person.
+                    feedback = ("You reported 'blocked' but you already wrote these files:\n" + "\n".join(f"- {w}" for w in written)
+                                + "\nDo not block. Return the AcceptanceSuite listing every test: its criterion id, its file "
+                                  "(path from the project root, as above), and its exact test name. Block only if a criterion "
+                                  "truly cannot be tested.")
+                    continue
                 self.stop(f"Test Writer blocked on {key}: {suite.blocked_reason or 'no reason given'} "
                           "(answer it, then resume)")
                 return False
