@@ -482,6 +482,10 @@ write_device_tests:
     - Find widgets by the app's own Keys (find.byKey), never by guessed type or text such as
       find.byType(ElevatedButton). Read the app code under {app_dir}/lib and docs/ui-design.md
       for the keys; if a key you need does not exist, test only what has keys.
+    - NEVER hard-code data ids, names or counts (a product id such as 'p-mug' does not exist: the staging
+      seed uses its own ids). Find a list item by its key PREFIX, e.g.
+      find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith('product-tile-')).first,
+      or read ids from the running API at the start of the test ({device_api_base}/products, with dart:io HttpClient).
     - Do not change application behaviour. If the app cannot reach {device_api_base} from the
       device (e.g. cleartext HTTP blocked), leave the test as is: that failure goes to the
       frontend developer.
