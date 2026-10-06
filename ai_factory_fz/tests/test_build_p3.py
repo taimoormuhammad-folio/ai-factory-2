@@ -610,3 +610,21 @@ def test_a_step_that_raises_leaves_a_recorded_stop_not_a_silent_running_run(tmp_
         main._run_flow(Flow(), {"run_id": "crash"})
     saved = ProjectState.model_validate_json(ws.load_state_json())
     assert saved.status == "stopped" and "failed on all models" in saved.stop_reason and "uv run resume crash" in saved.stop_reason
+
+
+def test_a_suite_that_does_not_compile_fails_the_last_task_of_the_component_not_earlier_ones(tmp_path, prd, profile):
+    broken = SandboxResult(exit_code=1, output="Failed to load \"/workspace/app/acceptance_test/ac_02_test.dart\": "
+                                               "Error: Type 'ProductBuilder' not found.\n00:00 +0 -1: Some tests failed.")
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    sandbox.results_for["npm run test:acceptance"] = [broken, broken]
+    items = [task("WI-001", ac=("AC-01",)), task("WI-002", ac=("AC-02",))]
+    b, s, _, _ = make_builder(tmp_path, prd, profile, items,
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001", "WI-002"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True))
+    s.build.locked_tests = {"server/test/acceptance/ac-01.spec.ts": "h"}
+    assert b.run_own_acceptance(b.items["WI-001"]) == (True, "")        # WI-002 is still to come: not its fault yet
+    s.build.item("WI-001").status = "done"
+    ok, text = b.run_own_acceptance(b.items["WI-002"])                  # the last one: the suite must load
+    assert not ok and "does not compile or load" in text and "ProductBuilder" in text
+    assert b._has_test_lines("  ✓ AC-01 lists (3 ms)") and not b._has_test_lines("Failed to load x\n00:00 +0 -1")

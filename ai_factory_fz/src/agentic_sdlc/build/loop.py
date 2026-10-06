@@ -532,11 +532,34 @@ class Builder:
         if run.ok or environment_failure(run.output):
             return True, ""
         mine = failing_for(run.output, item.ac_ids)
+        if not mine and self._last_of_component(item) and not self._has_test_lines(run.output):
+            # No test ran at all (the suite does not compile or load): nothing names a criterion, so the filter above
+            # would let it pass. When this is the milestone's last task of the component, the code must be loadable.
+            return False, (f"The locked acceptance suite does not compile or load, so none of its tests ran. Make the code "
+                           f"match the names and imports the tests use (read the locked tests; never change them):\n"
+                           f"{run.output[-3500:]}")
         if not mine:
             return True, ""
         return False, (f"The locked acceptance tests for this task's criteria ({', '.join(item.ac_ids)}) fail. "
                        f"Fix the code (never the tests):\n" + "\n".join(mine[:12]) +
                        f"\n\nLast output of `{acc.command}`:\n{run.output[-3500:]}")
+
+    def _last_of_component(self, item: WorkItem) -> bool:
+        """No other task of this component in the item's milestone is still waiting to be built."""
+        ms = next((m for m in self.s.backlog.milestones if item.id in m.work_item_ids), None)
+        if ms is None:
+            return True
+        return not any(w != item.id and self.items[w].component == item.component and self.s.build.item(w).status != "done"
+                       for w in ms.work_item_ids if w in self.items)
+
+    @staticmethod
+    def _has_test_lines(output: str) -> bool:
+        """The run reached at least one test (a result line of vitest/jest or flutter)."""
+        import re
+
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+        return bool(re.search(r"[✓✕✗√×]|\bPASS\b|\bFAIL\b.*\.(?:ts|js)|Tests\s+\d|\d+:\d+ \+\d+", clean)) \
+            and not re.search(r"Failed to load|Compilation failed|Error: Could not resolve|TS2307|Cannot find module", clean)
 
     def _discard(self, item: WorkItem, comp: Component) -> None:
         with self._git:
