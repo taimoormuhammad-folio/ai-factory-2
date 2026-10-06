@@ -29,7 +29,7 @@ from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import code as code_guardrails
 from agentic_sdlc.registry.profiles import Profile
-from agentic_sdlc.release.device import DeviceError, Emulator, failed_test_files, subset_test_command
+from agentic_sdlc.release.device import DeviceError, Emulator, failed_test_files, harness_failure, subset_test_command
 from agentic_sdlc.release.contract import contract_diff
 from agentic_sdlc.release.staging import Staging, StagingError, http_get
 from agentic_sdlc.state import ProjectState
@@ -273,6 +273,27 @@ class Releaser:
                                             f"({self.device_api_base}; re-run of the previously failing tests "
                                             f"only: {', '.join(r.device_failed_files)}):\n{quick.output[-3000:]}")]
         test = self.emulator.run(command, app.workdir, timeout_s=dev.build_timeout_s)
+        for restart in (False, True):      # the driver could not attach: try again, then on a fresh emulator
+            if test.ok or not harness_failure(test.output):
+                break
+            log.warning("Device test driver could not start the app (%s); retrying%s", harness_failure(test.output),
+                        " on a restarted emulator" if restart else "")
+            if restart:
+                self.emulator.stop()
+                try:
+                    self.emulator.start(window=window)
+                    if not self.emulator.install(dev.apk_path, app.workdir, dev.app_id).ok:
+                        break
+                except DeviceError as e:
+                    log.warning("Emulator restart failed: %s", e)
+                    break
+            test = self.emulator.run(command, app.workdir, timeout_s=dev.build_timeout_s)
+        if not test.ok and harness_failure(test.output):
+            r.device_passed, r.device_output = None, test.output[-6000:]
+            r.device_note = (f"the on-device test driver could not attach to the app after retries and an emulator restart "
+                             f"(a machine/emulator problem, not the app: it launched, see {shot or 'the launch screenshot'}): "
+                             f"{harness_failure(test.output)}")
+            return []
         r.device_passed, r.device_output = test.ok, test.output[-6000:]
         r.device_failed_files = [] if test.ok else failed_test_files(test.output, app.workdir, dev.test_dir)
         after = self.emulator.screenshot(f"reports/device/round{r.rounds}/after_tests.png")

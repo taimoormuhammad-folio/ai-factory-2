@@ -167,3 +167,43 @@ def test_a_build_that_keeps_failing_on_the_network_is_a_machine_problem_not_an_a
     r, s, _ = _device_round(tmp_path, prd, backlog, em)
     assert r._device_round() == []                                   # nothing for the frontend developer
     assert em.events.count("build") == 3 and "machine problem" in s.release.device_note
+
+
+# ---------- the test driver could not attach: a machine problem, not an app bug ----------
+
+HARNESS = "00:00 +0 -1: loading /workspace/app/integration_test/smoke_test.dart [E]\n  Failed to load \"x\": Unable to start the app on the device.\n"
+
+
+def test_harness_failures_are_told_apart_from_failing_journeys():
+    from agentic_sdlc.release.device import harness_failure
+
+    assert "Unable to start the app on the device" in harness_failure(HARNESS)
+    assert harness_failure("00:12 +3 -1: cart_test.dart: add to cart [E]\n  Expected: 1 Actual: 0") is None
+
+
+class DriverEmulator(TwoStageEmulator):
+    pass
+
+
+def test_a_driver_that_attaches_after_a_retry_passes(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    em = DriverEmulator([(False, HARNESS), (True, "All tests passed")])
+    r, s, _ = _device_round(tmp_path, prd, backlog, em)
+    assert r._device_round() == [] and s.release.device_passed is True and em.stopped == 0
+
+
+def test_a_driver_that_never_attaches_is_a_machine_problem_and_not_sent_to_the_developer(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    em = DriverEmulator([(False, HARNESS)] * 3)
+    r, s, _ = _device_round(tmp_path, prd, backlog, em)
+    assert r._device_round() == []                                   # nothing for the frontend developer
+    assert s.release.device_passed is None and "machine/emulator problem, not the app" in s.release.device_note
+    assert em.stopped >= 1 and em.started >= 2                       # the second retry used a restarted emulator
+
+
+def test_a_real_journey_failure_still_goes_to_the_developer(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    em = DriverEmulator([(False, "00:12 +3 -1: /workspace/app/integration_test/cart_test.dart: add to cart [E]")])
+    r, s, _ = _device_round(tmp_path, prd, backlog, em)
+    problems = r._device_round()
+    assert problems and s.release.device_passed is False

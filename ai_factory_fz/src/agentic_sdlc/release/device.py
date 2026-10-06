@@ -29,6 +29,20 @@ DOWNLOAD_BASE = "https://dl.google.com/android/repository/"
 FALLBACK_CMDLINE_TOOLS = "commandlinetools-linux-16111833_latest.zip"
 
 
+# The test driver could not attach to the app: an emulator/harness problem, not a failing journey. (When the app
+# itself is broken the driver attaches and a test fails with its own message.)
+HARNESS_FAILURES = ("Unable to start the app on the device", "Error waiting for a debug connection",
+                    "Dart VM Service was not discovered", "Timed out waiting for the Dart VM Service")
+
+
+def harness_failure(output: str) -> str | None:
+    """The harness error line in an on-device test run, if the driver never reached the app."""
+    for line in (output or "").splitlines():
+        if any(h.lower() in line.lower() for h in HARNESS_FAILURES):
+            return line.strip()[:200]
+    return None
+
+
 def failed_test_files(output: str, workdir: str, test_dir: str) -> list[str]:
     """Test files (relative to the app folder) that failed in a `flutter test` run, from its output lines such as
     "01:17 +3 -16: /workspace/app/integration_test/cart_test.dart: adds to cart [E]"."""
