@@ -442,3 +442,18 @@ def test_every_agent_that_writes_files_has_the_write_tool():
     for key in writers:
         agent = tasks[key]["agent"]
         assert "fs_write" in agents[agent]["tools"], f"{agent} runs {key} but has no fs_write"
+
+
+def test_device_suites_are_short_and_use_keys_not_guessed_widget_types(tmp_path, profile):
+    from agentic_sdlc.guardrails import agents as ag
+    from agentic_sdlc.registry.profiles import Profile
+    from agentic_sdlc.workspace import Workspace
+
+    profile = Profile.load("flutter_nestjs_ecommerce")
+    ws = Workspace.create("d", runs_dir=tmp_path)
+    ws.write_text("app/integration_test/a_test.dart", "testWidgets('a', (t) async { await t.tap(find.byKey(Key('x'))); });\n")
+    assert ag.st1_device_suite(ws, profile) == []
+    ws.write_text("app/integration_test/a_test.dart",
+                  "testWidgets('a', (t) async { await t.tap(find.byType(ElevatedButton)); });\n" * 9)
+    errors = " ".join(ag.st1_device_suite(ws, profile))
+    assert "9 on-device journeys; write at most 8" in errors and "guessed type (ElevatedButton)" in errors

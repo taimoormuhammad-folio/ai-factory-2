@@ -477,7 +477,11 @@ write_device_tests:
       the built items support.
     - Wait for network data with pumpAndSettle or explicit waits with timeouts; keep each test
       independent of the others and of existing cart state.
-    - A handful of reliable journeys beats many fragile ones. Clear failure messages.
+    - A handful of reliable journeys beats many fragile ones: AT MOST 8 testWidgets, one per
+      critical user journey (the pipeline rejects more).
+    - Find widgets by the app's own Keys (find.byKey), never by guessed type or text such as
+      find.byType(ElevatedButton). Read the app code under {app_dir}/lib and docs/ui-design.md
+      for the keys; if a key you need does not exist, test only what has keys.
     - Do not change application behaviour. If the app cannot reach {device_api_base} from the
       device (e.g. cleartext HTTP blocked), leave the test as is: that failure goes to the
       frontend developer.

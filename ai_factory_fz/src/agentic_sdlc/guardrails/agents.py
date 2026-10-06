@@ -15,6 +15,7 @@ from agentic_sdlc.artifacts.reports import QAReport
 from agentic_sdlc.registry.profiles import Profile
 from agentic_sdlc.workspace import Workspace
 
+MAX_DEVICE_JOURNEYS = 8
 AGENT_RULES = ["DV1", "DV2", "DV3", "QA1", "QA2", "DE1", "ST1"]
 
 
@@ -123,4 +124,13 @@ def st1_device_suite(ws: Workspace, profile: Profile) -> list[str]:
         errors.append(f"ST1: no on-device journey tests (testWidgets) in {dev.test_dir}/")
     if re.search(r"\bMock(Client|Dio|HttpClient)\b|package:mocktail|package:mockito|http_mock_adapter", text):
         errors.append("ST1: the device tests mock the network; they must use the real staging API")
+    journeys = len(re.findall(r"\btestWidgets\s*\(", text))
+    if journeys > MAX_DEVICE_JOURNEYS:
+        errors.append(f"ST1: {journeys} on-device journeys; write at most {MAX_DEVICE_JOURNEYS} (a handful of reliable "
+                      f"ones beats many fragile ones)")
+    guessed = sorted(set(re.findall(r"find\.byType\(\s*(ElevatedButton|TextButton|OutlinedButton|FilledButton|IconButton|"
+                                    r"FloatingActionButton|ListTile|Card|TextField|TextFormField)\b", text)))
+    if guessed:
+        errors.append(f"ST1: widgets found by guessed type ({', '.join(guessed)}); find them by the app's own "
+                      f"Key (find.byKey, see lib/ and docs/ui-design.md), which is stable")
     return errors
