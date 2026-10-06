@@ -1,0 +1,99 @@
+# Canary pipeline: the smallest app that still passes through every stage (plan, build, QA, review, release,
+# acceptance, G6/G7), with auto gates. Run it after any change to the framework:  uv run canary
+# It never deploys: the run ends 'ready to deploy'.
+demo: true
+
+phases:
+  discovery: true
+  planning: true
+  design: true
+  build: true
+  release: true
+
+# Hard limits for the planning agents; their output is rejected if it goes over.
+scope:
+  guidance: >
+    Canary build. Exactly one read endpoint (the product list) and one screen showing it. No cart,
+    no sign-in, no payments. Seed three products.
+  max_user_stories: 1
+  max_work_items: 4
+  max_milestones: 1
+  max_api_operations: 3
+  max_screens: 1
+
+# Model overrides for this pipeline (same format as config/models.yaml `agents:`).
+# All agents already use Haiku in models.yaml; these keep heavy agents on the shared tier.
+models:
+  architect: balanced
+  backend_developer: balanced
+  frontend_developer: balanced
+
+guardrails:
+  # Checks on the Architect's output; a failing design goes back to the Architect.
+  # A1 stack, A2 mobile platform, A3 repository layout, B1 prose matches contract, B2 health endpoint, B3 API prefix,
+  # B4 shared error schema, B5 typed responses, B6 auth per operation, C1 entities exist,
+  # C2 money as integers, C3 id + timestamps, D1 3+ ADRs, D2 security basics, D3 no secrets.
+  architect: [A1, A2, A3, B1, B2, B3, B4, B5, B6, C1, C2, C3, D1, D2, D3, D4]
+  # Checks on the other agents' work (a failing result goes back to the same agent):
+  # DV1 no weakening tests, DV2 no secrets, DV3 stay in scope (coding agents); QA1 consistent
+  # verdict, QA2 real work items (QA engineer, Integration pass); DE1 container hygiene
+  # (Deployment engineer); ST1 real smoke/device suites (Smoke tester).
+  agents: [DV1, DV2, DV3, QA1, QA2, DE1, ST1]
+
+design:
+  # UI/UX designer draws a mockup of each screen state (docs/ui/: HTML pages, PNGs, index.html gallery
+  # shown at the UI gate, G4). PNGs need Chrome or Chromium; without it only the HTML pages are written.
+  mockups: true
+  mockup_states: [success, loading, error, empty]   # kinds of states to draw, matched to each screen's spec
+  max_states_per_screen: 4
+  viewport: [390, 844]
+
+build:
+  # Test Writer writes acceptance tests per milestone before the build; they must fail first, then
+  # they are locked (tests.lock) and builders may not change them.
+  acceptance_tests: true
+  # Backend (+infra) and frontend lanes build at the same time; app tasks work against the contract.
+  parallel: true
+  # Every QA round: the Integrator's checks (combined build and tests, contract copies, locked tests, secrets)
+  # and the profile's scans, with raw results in reports/; then, if clean, the Code Reviewer.
+  verify: true
+  review: true
+  milestones: []             # all of them (the scope keeps it to two)
+  sandbox: docker            # SDLC_SANDBOX=local overrides
+  check_fix_attempts: 2
+  agent_timeout_s: 1800
+
+release:
+  staging_port: 3100
+  startup_timeout_s: 120
+  fix_rounds: 1
+  # Run the mobile app on an Android emulator against staging (needs `uv run setup-android` once).
+  device:
+    enabled: true
+    only_when_api_green: true   # APK build, emulator and journeys only once the API passes (smoke, contract, integration)
+    headless: true           # pipeline runs; `uv run showcase` opens a window
+    boot_timeout_s: 420
+  production_command: ""     # package only
+  production_timeout_s: 900
+
+# Auto gates (demo pipelines at tier L only).
+gates:
+  prd: true          # G1 spec approval (customer, through the Product Owner)
+  architecture: true # G2 design approval (human architect)
+  estimate: true       # G3 estimate approval (customer, through the Product Owner)
+  ui: true             # G4 UI design approval (customer, through the Product Owner)
+  merge: true         # G5 merge approval (developer of record, with a risk note)
+  release: true      # G6 UAT sign-off (customer, through the Product Owner)
+  production: true   # G7 go-live approval (named approver; the run then ends ready to deploy)
+
+# Risk tier L | M | H (the intake can set it per run). Tier L may waive the design gate
+# (gates.architecture_waiver_at_tier_l) and is required for gate_mode auto.
+risk_tier: L
+# console: ask on the terminal. async: stop and wait for `uv run approve <run_id> <G> --as "Name"`,
+# then `uv run resume`. auto: demo pipelines at tier L only. Override with SDLC_GATE_MODE.
+gate_mode: auto
+
+limits:
+  gate_rejections: 3
+  qa_fix_rounds: 2
+

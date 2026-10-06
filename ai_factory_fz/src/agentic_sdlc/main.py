@@ -157,6 +157,28 @@ def deploy(argv: list[str] | None = None, input_fn=input, is_tty=None) -> None:
         raise SystemExit(1)
 
 
+def canary(argv: list[str] | None = None) -> None:
+    """Run the smallest end-to-end run (auto gates, never deploys) and judge it; exit 0 smooth, 1 failed, 2 not smooth."""
+    from datetime import datetime
+
+    from agentic_sdlc import canary as canary_check
+    from agentic_sdlc.state import ProjectState
+
+    parser = argparse.ArgumentParser(description="Run the canary: a tiny end-to-end run to check the framework")
+    parser.add_argument("--profile", default=DEFAULT_PROFILE)
+    parser.add_argument("--brief", type=Path, default=PROJECT_ROOT / "briefs" / "canary.md")
+    args = parser.parse_args(argv)
+    run_id = f"canary-{datetime.now():%Y%m%d-%H%M%S}"
+    start_run(args.brief, args.profile, run_id, "pipeline.canary")
+    ws = Workspace.open(run_id)
+    state = ProjectState.model_validate_json(ws.load_state_json())
+    verdict = canary_check.judge(state)
+    text = canary_check.report(run_id, verdict)
+    ws.write_text("reports/canary.md", text)
+    print("\n" + text)
+    raise SystemExit(verdict.exit_code)
+
+
 def mockups() -> None:
     """Draw the UI/UX designer's screen mockups for an existing run (docs/ui/), without re-running it."""
     from agentic_sdlc.flow import default_deps
