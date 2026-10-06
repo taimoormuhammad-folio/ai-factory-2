@@ -24,6 +24,7 @@ from typing import Any, Callable
 from agentic_sdlc.artifacts.architecture import CONTRACT_PATH
 from agentic_sdlc.artifacts.reports import QAReport, WorkItemResult
 from agentic_sdlc.build.coders import Job, Worker
+from agentic_sdlc.build.services import transient_failure
 from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import code as code_guardrails
@@ -213,6 +214,16 @@ class Releaser:
             log.info("The app is unchanged since the last build: reusing its APK")
         else:
             build = self.emulator.build(dev.build_command.format(**fmt), app.workdir, timeout_s=dev.build_timeout_s)
+            for pause in (30, 90):        # Gradle/pub downloads fail now and then: retry before blaming the app
+                if build.ok or not transient_failure(build.output):
+                    break
+                log.warning("App build hit a network problem (%s); retrying in %ss", transient_failure(build.output), pause)
+                time.sleep(pause)
+                build = self.emulator.build(dev.build_command.format(**fmt), app.workdir, timeout_s=dev.build_timeout_s)
+            if not build.ok and transient_failure(build.output):
+                r.apk_key = ""
+                r.device_note = f"the app build kept failing on the network (a machine problem, not the app): {transient_failure(build.output)}"
+                return []
             if not build.ok:
                 r.apk_key = ""
                 r.device_passed, r.device_output = False, build.output[-6000:]

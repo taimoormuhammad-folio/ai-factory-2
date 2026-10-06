@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -36,7 +37,7 @@ from agentic_sdlc.artifacts.wbs import _prefix as owned_prefix
 from agentic_sdlc.build.coders import Job, Worker
 from agentic_sdlc.build.scaffold import ScaffoldError, required_runtimes, scaffold
 from agentic_sdlc.build import verify
-from agentic_sdlc.build.services import ServiceError, acceptance_database, environment_failure
+from agentic_sdlc.build.services import ServiceError, acceptance_database, environment_failure, transient_failure
 from agentic_sdlc.guardrails import agents as agent_guardrails
 from agentic_sdlc.guardrails import code as code_guardrails
 from agentic_sdlc.crews.base import PhaseError, TaskResult, UsageLimitError
@@ -79,6 +80,7 @@ class BuildConfig:
     review: bool = False             # Code Reviewer reviews each milestone that is clean otherwise
     acceptance_tests: bool = False   # Test Writer writes locked acceptance tests before each milestone
     parallel: bool = False           # backend and frontend lanes build at the same time
+    acceptance_each_task: bool = True   # after a task's checks pass, its own locked acceptance tests must pass too
 
     @classmethod
     def from_pipeline(cls, pipeline: dict[str, Any]) -> "BuildConfig":
@@ -95,7 +97,21 @@ class BuildConfig:
             review=bool(b.get("review", False)),
             acceptance_tests=bool(b.get("acceptance_tests", False)),
             parallel=bool(b.get("parallel", False)),
+            acceptance_each_task=bool(b.get("acceptance_each_task", True)),
         )
+
+
+FAILURE_MARKERS = ("●", "✕", "✗", "[E]", "FAIL", "failed", "Expected:")
+
+
+def failing_for(output: str, ac_ids: list[str]) -> list[str]:
+    """Failing-test lines of a test run that name one of these criteria (tests carry their criterion id)."""
+    import re
+
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    wanted = [a.lower() for a in ac_ids]
+    return [ln.strip() for ln in clean.splitlines()
+            if any(mark in ln for mark in FAILURE_MARKERS) and any(a in ln.lower() for a in wanted)]
 
 
 class Builder:
@@ -334,6 +350,12 @@ class Builder:
             return True, ""
         for cmd in comp.checks:
             result = self.sandbox.run_trusted(comp.runtime, comp.workdir, cmd)
+            for pause in (5, 20):         # a download hiccup is retried here, never sent to a developer agent
+                if result.ok or not transient_failure(result.output):
+                    break
+                log.warning("`%s` hit a network problem (%s); retrying in %ss", cmd, transient_failure(result.output), pause)
+                time.sleep(pause)
+                result = self.sandbox.run_trusted(comp.runtime, comp.workdir, cmd)
             if not result.ok:
                 return False, f"`{cmd}` failed (exit {result.exit_code}):\n{result.output[-6000:]}"
         return True, ""
@@ -469,11 +491,38 @@ class Builder:
             if ok:
                 ok, output = self.run_verify(item, comp)
             if ok:
+                ok, output = self.run_own_acceptance(item)
+            if ok:
                 return "done", result, ""
             problems = f"The checks failed after your change. Fix the cause.\n{output}"
         # Nothing half-done may slip into the next item's commit.
         self._discard(item, comp)
         return "failed", result, f"still failing after {attempt} attempt(s); changes discarded. Last output:\n{output[-1500:]}"
+
+    def run_own_acceptance(self, item: WorkItem) -> tuple[bool, str]:
+        """The locked acceptance tests for this task's own criteria, right after its checks pass, so the builder
+        sees a failing test in the same loop, not as a QA bug a round later. Tests of criteria that other, not yet
+        built tasks serve are expected to fail now and are ignored; a machine problem is never the builder's fault."""
+        comp = self.profile.components.get(item.component)
+        acc = comp.acceptance if comp else None
+        if not (self.cfg.acceptance_each_task and acc and item.ac_ids):
+            return True, ""
+        folder = acc.dir.rstrip("/") + "/"
+        if not any(p.startswith(folder) for p in self.s.build.locked_tests):
+            return True, ""
+        try:
+            run = self.run_suite(comp, acc)
+        except ServiceError as e:
+            log.warning("Acceptance tests of %s not run: %s", item.id, e)
+            return True, ""
+        if run.ok or environment_failure(run.output):
+            return True, ""
+        mine = failing_for(run.output, item.ac_ids)
+        if not mine:
+            return True, ""
+        return False, (f"The locked acceptance tests for this task's criteria ({', '.join(item.ac_ids)}) fail. "
+                       f"Fix the code (never the tests):\n" + "\n".join(mine[:12]) +
+                       f"\n\nLast output of `{acc.command}`:\n{run.output[-3500:]}")
 
     def _discard(self, item: WorkItem, comp: Component) -> None:
         with self._git:

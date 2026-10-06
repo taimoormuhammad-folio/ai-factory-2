@@ -359,3 +359,58 @@ def test_flutter_containers_keep_the_android_sdk_and_gradle_cache_between_runs(t
         assert "GRADLE_USER_HOME=/cache/gradle" in cmd
         node, _ = SandboxRunner(ws, profile.sandbox, SandboxMode.DOCKER).build_command("node", "server", ["npm", "test"])
         assert not any(v.startswith("sdlc-") for v in [node[i + 1] for i, a in enumerate(node) if a == "-v"])   # only Flutter
+
+
+# ---------- acceptance after every task ----------
+
+def test_failing_lines_are_matched_to_the_tasks_criteria():
+    from agentic_sdlc.build.loop import failing_for
+
+    out = "  ✓ AC-02 lists carts\n  ✕ AC-01 lists products (12 ms)\n● Catalog › AC-03 detail 404\nAC-01 mentioned in a passing line\n"
+    assert failing_for(out, ["AC-01"]) == ["✕ AC-01 lists products (12 ms)"]
+    assert failing_for(out, ["AC-03"]) == ["● Catalog › AC-03 detail 404"]
+    assert failing_for(out, ["AC-09"]) == []
+
+
+def _own_acceptance(tmp_path, prd, profile, results):
+    profile = with_acceptance(profile)
+    sandbox = FakeSandbox()
+    sandbox.results_for["npm run test:acceptance"] = results
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                              [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox,
+                              cfg=BuildConfig(milestones=[], acceptance_tests=True, guard_rules={"DV1", "DV2", "DV3"}))
+    s.build.locked_tests = {"server/test/acceptance/ac-01.spec.ts": "h"}
+    return b, s
+
+
+def test_a_tasks_own_failing_acceptance_test_goes_back_to_the_builder_in_the_same_loop(tmp_path, prd, profile):
+    fail = SandboxResult(exit_code=1, output="  ✕ AC-01 lists products\n  ✕ AC-07 not built yet\n")
+    b, s = _own_acceptance(tmp_path, prd, profile, [fail, SandboxResult(exit_code=0, output="ok")])
+    ok, text = b.run_own_acceptance(b.items["WI-001"])
+    assert not ok and "AC-01 lists products" in text and "AC-07" not in text.split("Last output")[0]
+    assert "never the tests" in text
+    assert b.run_own_acceptance(b.items["WI-001"]) == (True, "")
+
+
+def test_tests_of_criteria_other_tasks_serve_are_ignored_and_machine_problems_are_not_blamed(tmp_path, prd, profile):
+    other = SandboxResult(exit_code=1, output="  ✕ AC-07 not built yet\n")
+    env = SandboxResult(exit_code=1, output="  ✕ AC-01 lists products\nError: connect ECONNREFUSED 127.0.0.1:5432\n")
+    b, s = _own_acceptance(tmp_path, prd, profile, [other, env])
+    assert b.run_own_acceptance(b.items["WI-001"]) == (True, "")
+    assert b.run_own_acceptance(b.items["WI-001"]) == (True, "")
+    b.cfg.acceptance_each_task = False
+    assert b.run_own_acceptance(b.items["WI-001"]) == (True, "")
+
+
+def test_a_failing_check_with_a_network_error_is_retried_before_the_agent_sees_it(tmp_path, prd, profile, monkeypatch):
+    from agentic_sdlc.build import loop
+
+    monkeypatch.setattr(loop.time, "sleep", lambda s: None)
+    sandbox = FakeSandbox()
+    key = profile.components["backend"].checks[0]
+    sandbox.results_for[key] = [SandboxResult(exit_code=1, output="npm ERR! code EAI_AGAIN"), SandboxResult(exit_code=0, output="ok")]
+    b, s, _, worker = make_builder(tmp_path, prd, profile, [task("WI-001")],
+                                   [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])], sandbox=sandbox)
+    b.run()
+    assert s.build.item("WI-001").status == "done" and s.build.item("WI-001").attempts == 1
+    assert not [j for j in worker.jobs if j.task_key == "fix_work_item"]

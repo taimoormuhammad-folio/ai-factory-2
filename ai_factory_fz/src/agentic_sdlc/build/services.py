@@ -27,6 +27,21 @@ ENVIRONMENT_FAILURES = re.compile(
     r"SocketException|Connection refused|No devices are connected|No supported devices", re.I)
 
 
+# Network and download hiccups: the same command usually works a minute later, and no code change can fix them.
+TRANSIENT_FAILURES = re.compile(
+    r"Could not resolve host|Temporary failure in name resolution|Failed host lookup|Connection reset|"
+    r"Read timed out|Connect timed out|Could not (?:GET|HEAD|download)|Premature end of Content-Length|"
+    r"EAI_AGAIN|ECONNRESET|ETIMEDOUT|ENOTFOUND|TLS handshake timeout|unexpected EOF|"
+    r"Could not install from|Got socket exception during request|SSL peer shut down", re.I)
+
+
+def transient_failure(output: str) -> str | None:
+    """The first network/download error line in a failed command's output, if any."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    lines = [ln.strip() for ln in clean.splitlines() if TRANSIENT_FAILURES.search(ln)]
+    return max(lines, key=len)[:200] if lines else None
+
+
 def environment_failure(output: str) -> str | None:
     """The first environment-error line in a test run's output, if any."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")

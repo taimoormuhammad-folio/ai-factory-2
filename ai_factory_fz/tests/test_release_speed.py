@@ -129,3 +129,41 @@ def test_an_unchanged_app_reuses_its_apk(tmp_path, prd, backlog, monkeypatch):
     ws.commit("fix")
     r._device_round()                                              # committed change: new tree, build again
     assert em.events.count("build") == 3
+
+
+# ---------- network hiccups are retried, not handed to a developer ----------
+
+def test_transient_failures_are_told_apart_from_code_failures():
+    from agentic_sdlc.build.services import transient_failure
+
+    assert "resolve host" in transient_failure("FAILURE\n> Could not resolve host: dl.google.com\n")
+    assert transient_failure("Could not GET 'https://repo.maven.org/x'. Read timed out") is not None
+    assert transient_failure("lib/main.dart:3: Error: Undefined name 'foo'") is None
+
+
+class FlakyBuildEmulator(FakeEmulator):
+    def __init__(self, outputs):
+        super().__init__()
+        self.outputs = list(outputs)
+
+    def run(self, command, workdir, timeout_s=None):
+        if command.startswith("flutter build"):
+            ok, text = self.outputs.pop(0) if len(self.outputs) > 1 else self.outputs[0]
+            return SandboxResult(exit_code=0 if ok else 1, output=text)
+        return super().run(command, workdir, timeout_s)
+
+
+def test_a_download_hiccup_in_the_app_build_is_retried_without_a_developer(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    em = FlakyBuildEmulator([(False, "Could not resolve host: dl.google.com"), (True, "built")])
+    r, s, _ = _device_round(tmp_path, prd, backlog, em)
+    assert r._device_round() == [] and em.events.count("build") == 2
+    assert s.release.device_passed is True
+
+
+def test_a_build_that_keeps_failing_on_the_network_is_a_machine_problem_not_an_app_bug(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    em = FlakyBuildEmulator([(False, "Could not resolve host: dl.google.com")])
+    r, s, _ = _device_round(tmp_path, prd, backlog, em)
+    assert r._device_round() == []                                   # nothing for the frontend developer
+    assert em.events.count("build") == 3 and "machine problem" in s.release.device_note
