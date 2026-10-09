@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MobileFrame } from './Phone';
-import { mockups, smokeFeatures, smokeReport, sourceFiles, specDocument } from './gates';
+import { MobileFrame, ReadyApp } from './Phone';
+import { mockups, smokeFeatures, smokeReport, sourceFiles, specDocument, technicalDocument } from './gates';
 
 function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
@@ -114,10 +114,44 @@ function FolderTree({ nodes, selected, onSelect, depth = 0 }) {
 
 function SpecReview({ project }) {
   const documentText = specDocument(project);
+  const brief = project?.text?.trim() || 'A workspace where people organize their work in one place.';
+  const sections = [
+    { title: 'Customer brief', items: [brief] },
+    { title: 'Scope', items: ['Member workspace', 'Item list', 'Saved items', 'Billing, admin roles and public sharing are out of scope'] },
+    { title: 'Stories', items: ['A member can sign in and land in the workspace.', 'A member can create an item and see it in the list.', 'A member can save an item and find it later.'] },
+    { title: 'Acceptance criteria', items: ['Sign-in rejects an unknown password and explains why.', 'A new item shows up in the list without a reload.', 'Saved items stay available after the member returns.'] },
+    { title: 'Rules', items: ['Account rules apply to every member.', 'Core scenarios cover create, list and save.', 'Edge cases cover a wrong password and an empty list.'] },
+  ];
   return (
     <div className="gate-body">
-      <div className="gate-toolbar"><p>Review the specification before the team continues.</p><button type="button" className="secondary" onClick={() => downloadText('NOVA-specification.md', documentText, 'text/markdown')}>Download specification</button></div>
+      <div className="gate-toolbar"><p>Review these specs, then approve or reject.</p><button type="button" className="secondary" onClick={() => downloadText('NOVA-specification.md', documentText, 'text/markdown')}>Download specification</button></div>
+      <div className="spec-list">
+        {sections.map((section) => (
+          <section key={section.title}>
+            <h3>{section.title}</h3>
+            {section.items.map((item) => <p key={item}>{item}</p>)}
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TechnicalReview() {
+  const documentText = technicalDocument();
+  return (
+    <div className="gate-body">
+      <div className="gate-toolbar"><p>Review the technical specification before it goes to the PM.</p><button type="button" className="secondary" onClick={() => downloadText('NOVA-technical-specification.md', documentText, 'text/markdown')}>Download specification</button></div>
       <article className="spec-sheet">{documentText}</article>
+    </div>
+  );
+}
+
+function FinalAppReview() {
+  return (
+    <div className="gate-body app-gate">
+      <p>This is the finished application.</p>
+      <MobileFrame><ReadyApp /></MobileFrame>
     </div>
   );
 }
@@ -158,18 +192,25 @@ function SmokeReview() {
   );
 }
 
-const titles = { spec: 'Review specification', deploy: 'Review build', smoke: 'Review smoke tests' };
+const titles = { spec: 'Review specification', technical: 'Review technical specification', deploy: 'Review build', smoke: 'Review smoke tests', app: 'Review final app' };
 
-export function GateReview({ kind, project, onClose, onApprove, onReject }) {
+function DecisionNote({ decision }) {
+  if (!decision?.history?.length) return null;
+  return <div className="gate-settled">{decision.history.map((entry, index) => <p key={index}><strong className={entry.decision==='rejected'?'rejected':'approved'}>{entry.decision==='rejected'?'Rejected':'Approved'}</strong>{entry.comment?` · ${entry.comment}`:''}</p>)}</div>;
+}
+
+export function GateReview({ kind, project, settled, decision, onClose, onApprove, onReject }) {
   const ref = useRef();
   useEffect(() => { ref.current.showModal(); }, []);
   return (
     <dialog ref={ref} className="gate-dialog" onCancel={onClose} onClick={(event) => { if (event.target === ref.current) onClose(); }}>
       <div className="modal-heading"><h2>{titles[kind]}</h2><button type="button" onClick={onClose} aria-label="Close dialog">×</button></div>
       {kind === 'spec' && <SpecReview project={project} />}
+      {kind === 'technical' && <TechnicalReview />}
       {kind === 'deploy' && <DeployReview />}
       {kind === 'smoke' && <SmokeReview />}
-      <GateActions onApprove={onApprove} onReject={onReject} />
+      {kind === 'app' && <FinalAppReview />}
+      {settled ? <DecisionNote decision={decision} /> : <GateActions onApprove={onApprove} onReject={onReject} />}
     </dialog>
   );
 }
@@ -187,7 +228,7 @@ function MockScreen({ id }) {
   return <div className="mobile-content ready-app mock-screen"><div className="mobile-brand">NOVA <span>N</span></div><div className="ready-hero"><small>YOUR WORKSPACE</small><h3>Everything, in one place.</h3><p>Pick up where you left off.</p><b className="mock-cta">Create new</b></div><div className="mobile-grid"><div className="tile">▣<b>My items</b><small>3 items</small></div><div className="tile">◇<b>Saved</b><small>1 item</small></div></div></div>;
 }
 
-export function MockupReview({ onClose, onApprove, onReject }) {
+export function MockupReview({ settled, decision, onClose, onApprove, onReject }) {
   const [index, setIndex] = useState(0);
   const mockup = mockups[index];
   useEffect(() => {
@@ -208,7 +249,7 @@ export function MockupReview({ onClose, onApprove, onReject }) {
         <button type="button" className="mockup-nav" aria-label="Next mockup" disabled={index === mockups.length - 1} onClick={() => setIndex(index + 1)}>›</button>
       </div>
       <div className="mockup-dots">{mockups.map((item, itemIndex) => <button type="button" key={item.id} aria-label={item.name} aria-current={itemIndex === index ? 'true' : undefined} onClick={() => setIndex(itemIndex)} />)}</div>
-      <GateActions onApprove={onApprove} onReject={onReject} />
+      {settled ? <DecisionNote decision={decision} /> : <GateActions onApprove={onApprove} onReject={onReject} />}
     </div>
   );
 }

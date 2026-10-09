@@ -1,10 +1,8 @@
-export const GATE_HOLD = 48;
-
 export const gates = [
   { index: 1, kind: 'spec', label: 'Review specification' },
-  { index: 3, kind: 'design', label: 'Review mockups' },
-  { index: 7, kind: 'deploy', label: 'Review build' },
-  { index: 9, kind: 'smoke', label: 'Review smoke tests' },
+  { index: 2, kind: 'technical', label: 'Review technical specification' },
+  { index: 4, kind: 'design', label: 'Review mockups' },
+  { index: 9, kind: 'app', label: 'Review final app' },
 ];
 
 export const gateIndexes = gates.map((gate) => gate.index);
@@ -128,6 +126,31 @@ ${brief}
 ## Rules
 - Scope is the workspace, the item list and saved items.
 - Billing, admin roles and public sharing are out of scope.
+`;
+}
+
+export function technicalDocument() {
+  return `# NOVA technical specification
+
+## System
+The app is a workspace client talking to one API service.
+
+## Services
+- Identity, for sign-in and session
+- Items, for the member's list and saved items
+
+## Data
+- User: id, name, email
+- Item: id, name, owner, saved
+
+## API contracts
+- POST /session checks the member and returns a token
+- GET /items returns the signed-in member's items
+- POST /items creates an item for that member
+
+## Rules
+- Every item call requires a session
+- Guests cannot read or create items
 `;
 }
 

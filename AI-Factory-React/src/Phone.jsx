@@ -5,7 +5,7 @@ export function MobileFrame({children,previewUrl}) {
 const Bar=({width='100%',height=8})=><span className="skeleton" style={{width,height}}/>;
 const Box=({children,className=''})=><div className={`skeleton-box ${className}`}>{children}</div>;
 export function StageSkeleton({stage,progress}) {
- const visual=[0,1,4,3,7,5,5,8,6,7,8][stage]??8;
+ const visual=[0,1,4,7,3,5,5,6,8,7][stage]??7;
  return <div className={`mobile-content skeleton-stage stage-${stage}`} key={stage} aria-label={`Stage ${stage+1} application preview loading`} aria-busy="true"><div className="mobile-brand">NOVA <span>N</span></div>
  {visual===0 ? <><Box><Bar width="60%" height={12}/><Bar/><Bar width="85%"/><Bar width="40%" height={22}/></Box><div className="mobile-grid">{[0,1].map(i=><Box key={i}><Bar width={26} height={26}/><Bar/><Bar width="65%"/></Box>)}</div><Box><Bar width="55%"/><Bar/><Bar width="80%"/></Box></> :
  visual===1 ? <><h4>Application structure</h4><small>4 modules · 18 user stories</small>{['Entry & identity','Core experience','Detail & activity','Profile & preferences'].map((x,i)=><Box key={x} className="structure-row"><span>{i+1}</span><div><b>{x}</b><Bar width={`${90-i*10}%`}/></div></Box>)}</> :

@@ -1,41 +1,40 @@
-import { GATE_HOLD, gateIndexes } from './gates.js';
+import { gateIndexes } from './gates.js';
 
-const STAGE_COUNT = 11;
-const GATE = STAGE_COUNT - 2;
+const STAGE_COUNT = 10;
+const CUSTOMER = 0;
+const PM = 3;
+const UIUX = 4;
+const FRONTEND = 5;
+const BACKEND = 6;
+const QA = 7;
+const GATE = STAGE_COUNT - 1;
 const LAST = STAGE_COUNT - 1;
+const PARALLEL_WITH = { [FRONTEND]: [BACKEND] };
+
+const HANDOFF = {
+  id: 'pm-client',
+  at: PM,
+  atProgress: 40,
+  reopen: CUSTOMER,
+  note: 'PM sent the estimate to the customer',
+};
 
 const ISSUES = [
   {
-    id: 'spec-gap',
-    at: 1,
-    atProgress: 42,
-    reopen: [0],
-    paces: { 0: 1.75, 1: 0.55 },
-    note: 'Customer clarification · Customer and Spec Writer are both working',
-  },
-  {
-    id: 'backend-block',
-    at: 5,
-    atProgress: 36,
-    reopen: [2, 3],
-    paces: { 2: 0.6, 3: 1.65, 5: 1.05 },
-    note: 'Build issue · Architect, UI/UX Designer and Backend Developer are working at different speeds',
-  },
-  {
-    id: 'qa-build',
-    at: 8,
+    id: 'qa-frontend',
+    at: QA,
     atProgress: 28,
-    reopen: [5, 6],
-    paces: { 5: 1.4, 6: 0.9, 8: 0.5 },
-    note: 'QA failed · Backend and Frontend started rework; they will not finish together',
+    reopen: [FRONTEND],
+    paces: { [FRONTEND]: 0.4, [QA]: 0.55 },
+    note: 'QA sent a fix to the frontend',
   },
   {
-    id: 'qa-design',
-    at: 8,
-    atProgress: 62,
-    reopen: [3],
-    paces: { 3: 1.55, 8: 0.45 },
-    note: 'QA found a design defect while other fixes are still open',
+    id: 'qa-backend',
+    at: QA,
+    atProgress: 56,
+    reopen: [BACKEND],
+    paces: { [BACKEND]: 1.6, [QA]: 0.34 },
+    note: 'QA sent a fix to the backend',
   },
 ];
 
@@ -76,24 +75,44 @@ function clonePaces(state) {
   return Array(STAGE_COUNT).fill(1);
 }
 
+function recordDecision(decisions, index, decision, comment = '') {
+  const history = [...(decisions[index]?.history || []), { decision, comment }];
+  decisions[index] = { decision, comment, history };
+  return decisions;
+}
+
 function cloneHolds(state) {
   return state.holds?.length === STAGE_COUNT ? state.holds.slice() : Array(STAGE_COUNT).fill(0);
 }
 
-function focusIndex(statuses) {
-  const active = statuses.findIndex((status) => status === 'active');
+function escorting(statuses, progresses, index = PM) {
+  return statuses[index] === 'active' && progresses[index] >= 100;
+}
+
+function focusIndex(statuses, progresses = []) {
+  const active = statuses.findIndex((status, index) => status === 'active' && !escorting(statuses, progresses, index));
   if (active !== -1) return active;
   const awaiting = statuses.findIndex((status) => status === 'awaiting');
-  return awaiting === -1 ? LAST : awaiting;
+  if (awaiting !== -1) return awaiting;
+  if (statuses[PM] === 'active') return PM;
+  const held = statuses.findIndex((status) => status === 'hold');
+  return held === -1 ? LAST : held;
+}
+
+function startStage(statuses, progresses, paces, index, pace = 1) {
+  statuses[index] = 'active';
+  progresses[index] = 0;
+  paces[index] = pace;
 }
 
 function releaseReadyStages(statuses, progresses, paces) {
-  const firstOpen = statuses.findIndex((status) => status !== 'done');
+  const firstOpen = statuses.findIndex((status, index) => status !== 'done' && !escorting(statuses, progresses, index));
   if (firstOpen === -1) return true;
   if (statuses[firstOpen] === 'pending') {
-    statuses[firstOpen] = 'active';
-    progresses[firstOpen] = 0;
-    paces[firstOpen] = 1;
+    startStage(statuses, progresses, paces, firstOpen);
+    for (const sibling of PARALLEL_WITH[firstOpen] || []) {
+      if (statuses[sibling] === 'pending') startStage(statuses, progresses, paces, sibling, sibling === BACKEND ? 0.72 : 1);
+    }
   }
   return false;
 }
@@ -116,6 +135,17 @@ export function advance(state, amount) {
     progresses[index] = Math.min(100, progresses[index] + amount * (paces[index] || 1));
   }
 
+  if (!fired.includes(HANDOFF.id) && statuses[HANDOFF.at] === 'active' && progresses[HANDOFF.at] >= HANDOFF.atProgress && progresses[HANDOFF.at] < 100) {
+    fired.push(HANDOFF.id);
+    note = HANDOFF.note;
+    statuses[HANDOFF.at] = 'hold';
+    statuses[HANDOFF.reopen] = 'active';
+    progresses[HANDOFF.reopen] = 0;
+    holds[HANDOFF.reopen] = 0;
+    revisited[HANDOFF.reopen] = true;
+    paces[HANDOFF.reopen] = 1.8;
+  }
+
   for (const issue of ISSUES) {
     if (fired.includes(issue.id)) continue;
     if (statuses[issue.at] !== 'active' || progresses[issue.at] < issue.atProgress) continue;
@@ -125,13 +155,18 @@ export function advance(state, amount) {
       statuses[index] = 'active';
       progresses[index] = 0;
       holds[index] = 0;
+      revisited[index] = true;
     }
     for (const [index, pace] of Object.entries(issue.paces)) paces[Number(index)] = pace;
   }
 
   for (const index of activeIndexes) {
-    if (progresses[index] < 100) continue;
+    if (statuses[index] === 'hold' || progresses[index] < 100) continue;
     progresses[index] = 100;
+    if (index === PM) {
+      paces[PM] = 0;
+      continue;
+    }
     if (gateIndexes.includes(index)) {
       statuses[index] = 'awaiting';
       holds[index] = 0;
@@ -139,27 +174,23 @@ export function advance(state, amount) {
     }
     statuses[index] = 'done';
     revisited[index] = true;
-  }
-
-  if (!state.reviewing) {
-    statuses.forEach((status, index) => {
-      if (status !== 'awaiting') return;
-      holds[index] += amount;
-      if (holds[index] < GATE_HOLD) return;
-      statuses[index] = 'done';
-      revisited[index] = true;
-      holds[index] = 0;
-      decisions[index] = { decision: 'auto-approved', comment: '' };
-      if (index === GATE) approval = 'auto-approved';
-    });
+    if (index === CUSTOMER && statuses[PM] === 'hold') {
+      statuses[PM] = 'active';
+      note = 'Customer returned the estimate to the PM';
+    }
   }
 
   if (releaseReadyStages(statuses, progresses, paces)) {
+    statuses[PM] = 'done';
+    progresses[PM] = 100;
+    revisited[PM] = true;
     return { ...state, statuses, progresses, paces, fired, revisited, holds, decisions, note: '', progress: 100, active: LAST, complete: true, paused: true, approval };
   }
 
+  const pmEscort = escorting(statuses, progresses);
+  if (pmEscort && (note.startsWith('PM sent') || note.startsWith('Customer returned'))) note = '';
   const stillParallel = statuses.filter((status) => status === 'active').length > 1;
-  const active = focusIndex(statuses);
+  const active = focusIndex(statuses, progresses);
   return {
     ...state,
     active,
@@ -171,7 +202,7 @@ export function advance(state, amount) {
     revisited,
     holds,
     decisions,
-    note: stillParallel ? note : '',
+    note: stillParallel || statuses[PM] === 'hold' || (!pmEscort && statuses[PM] === 'active' && note) ? note : '',
     approval,
     complete: false,
     paused: state.paused,
@@ -196,12 +227,15 @@ export function runReducer(state, action) {
       progresses[index] = 100;
       revisited[index] = true;
       holds[index] = 0;
-      const decisions = { ...(state.decisions || {}), [index]: { decision: 'approved', comment: action.comment || '' } };
+      const decisions = recordDecision({ ...(state.decisions || {}) }, index, 'approved', action.comment || '');
       const approval = index === GATE ? 'approved' : state.approval;
       if (releaseReadyStages(statuses, progresses, paces)) {
+        statuses[PM] = 'done';
+        progresses[PM] = 100;
+        revisited[PM] = true;
         return { ...state, statuses, progresses, paces, revisited, holds, decisions, note: '', progress: 100, active: LAST, complete: true, paused: true, approval, reviewing: false };
       }
-      const active = focusIndex(statuses);
+      const active = focusIndex(statuses, progresses);
       return { ...state, active, progress: progresses[active] ?? 0, statuses, progresses, paces, revisited, holds, decisions, approval, paused: false, note: '', reviewing: false };
     }
     case 'reject': {
@@ -212,11 +246,21 @@ export function runReducer(state, action) {
       const progresses = cloneProgresses(state);
       const revisited = state.revisited?.length === STAGE_COUNT ? state.revisited.slice() : Array(STAGE_COUNT).fill(false);
       const holds = cloneHolds(state);
+      const decisions = recordDecision({ ...(state.decisions || {}) }, index, 'rejected', action.comment || '');
+      if (index === UIUX) {
+        statuses[UIUX] = 'pending';
+        progresses[UIUX] = 0;
+        revisited[UIUX] = true;
+        holds[UIUX] = 0;
+        statuses[CUSTOMER] = 'active';
+        progresses[CUSTOMER] = 0;
+        revisited[CUSTOMER] = true;
+        return { ...state, active: CUSTOMER, progress: 0, statuses, progresses, revisited, holds, decisions, paused: false, complete: false, reviewing: false, note: 'UI/UX was rejected and sent back to the customer' };
+      }
       statuses[index] = 'active';
       progresses[index] = 0;
       revisited[index] = true;
       holds[index] = 0;
-      const decisions = { ...(state.decisions || {}), [index]: { decision: 'rejected', comment: action.comment || '' } };
       return { ...state, active: index, progress: 0, statuses, progresses, revisited, holds, decisions, paused: false, complete: false, reviewing: false, note: '' };
     }
     case 'revise': {
@@ -225,15 +269,19 @@ export function runReducer(state, action) {
       for (let index = 0; index < GATE; index += 1) revisited[index] = true;
       const statuses = Array(STAGE_COUNT).fill('done');
       const progresses = Array(STAGE_COUNT).fill(100);
-      statuses[5] = 'active';
-      progresses[5] = 0;
-      for (let index = 6; index < STAGE_COUNT; index += 1) {
+      statuses[PM] = 'active';
+      progresses[PM] = 100;
+      statuses[FRONTEND] = 'active';
+      progresses[FRONTEND] = 0;
+      statuses[BACKEND] = 'active';
+      progresses[BACKEND] = 0;
+      for (let index = QA; index < STAGE_COUNT; index += 1) {
         statuses[index] = 'pending';
         progresses[index] = 0;
       }
       return {
         ...createInitialRun(),
-        active: 5,
+        active: FRONTEND,
         progress: 0,
         statuses,
         progresses,
@@ -252,7 +300,7 @@ export const overallProgress = (state) => {
   if (state.complete) return 100;
   const progresses = state.progresses?.length === STAGE_COUNT ? state.progresses : cloneProgresses(state);
   const statuses = state.statuses?.length === STAGE_COUNT ? state.statuses : cloneStatuses(state);
-  const total = statuses.reduce((sum, status, index) => sum + (status === 'done' ? 100 : status === 'active' ? progresses[index] : 0), 0);
+  const total = statuses.reduce((sum, status, index) => sum + (status === 'done' ? 100 : status === 'active' || status === 'hold' || status === 'awaiting' ? progresses[index] : 0), 0);
   return Math.min(99, Math.floor(total / STAGE_COUNT));
 };
 
