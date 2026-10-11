@@ -60,6 +60,15 @@ class EmulatorStartRequest(BaseModel):
     device_id: str | None = None
 
 
+class GateDecisionRequest(BaseModel):
+    approved: bool
+    feedback: str = ""
+    approver: str = "Console User"
+    role: str = ""
+    risk_note: str = ""
+    resume: bool = True
+
+
 @app.get("/briefs/random")
 def random_brief() -> dict[str, str]:
     import sys
@@ -148,6 +157,108 @@ def run_detail(run_id: str) -> dict[str, Any]:
     if not run:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return run
+
+
+@app.post("/runs/{run_id}/demo-ready")
+def mark_demo_ready(run_id: str) -> dict[str, Any]:
+    """Stop QA/fix loops and mark the run complete when all work items are built (manual demo)."""
+    if FACTORY_ENGINE != "fz":
+        raise HTTPException(status_code=400, detail="Demo-ready is only supported for FZ runs")
+    try:
+        from fz_demo import finalize_run_for_demo
+
+        return finalize_run_for_demo(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/runs/{run_id}/gates/{gate}/decision")
+def decide_gate(run_id: str, gate: str, body: GateDecisionRequest) -> dict[str, Any]:
+    """Approve or reject an async FZ gate (G1–G7) from the React UI, then resume the run."""
+    if FACTORY_ENGINE != "fz":
+        raise HTTPException(status_code=400, detail="Gates require FACTORY_ENGINE=fz")
+    try:
+        from fz_gates import record_gate_decision
+
+        result = record_gate_decision(
+            run_id,
+            gate,
+            approved=body.approved,
+            feedback=body.feedback,
+            approver=body.approver or "Console User",
+            role=body.role,
+            risk_note=body.risk_note,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    from fz_bridge import log_fz_audit
+
+    log_fz_audit(
+        run_id,
+        f"gate_{result['gate_id']}",
+        "approved" if body.approved else "rejected",
+        body.approver or "Console User",
+        {"gate": result["gate"], "feedback": body.feedback[:200]},
+    )
+
+    if body.resume:
+        try:
+            from run_manager import resume_run
+
+            resume_info = resume_run(run_id)
+            result["resume"] = resume_info
+        except Exception as exc:
+            result["resume_error"] = str(exc)
+
+    return result
+
+
+@app.post("/runs/{run_id}/deepeval")
+def start_deepeval(run_id: str) -> dict[str, Any]:
+    """Start flow-only DeepEval for a completed FZ run (async; ~2 min)."""
+    if FACTORY_ENGINE != "fz":
+        raise HTTPException(status_code=400, detail="DeepEval requires FACTORY_ENGINE=fz")
+    try:
+        from fz_deepeval import start
+
+        return start(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/runs/{run_id}/deepeval")
+def deepeval_status(run_id: str) -> dict[str, Any]:
+    if FACTORY_ENGINE != "fz":
+        raise HTTPException(status_code=400, detail="DeepEval requires FACTORY_ENGINE=fz")
+    from fz_deepeval import read_status
+
+    return read_status(run_id)
+
+
+@app.get("/runs/{run_id}/deepeval.html")
+def deepeval_report_html(run_id: str) -> Response:
+    if FACTORY_ENGINE != "fz":
+        raise HTTPException(status_code=501, detail="DeepEval requires FACTORY_ENGINE=fz")
+    try:
+        from fz_deepeval import read_report_html
+
+        html, _name = read_report_html(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return Response(content=html, media_type="text/html; charset=utf-8")
 
 
 @app.post("/runs/{run_id}/resume")
@@ -254,7 +365,8 @@ def _dossier_pdf_response(run_id: str) -> Response:
 @app.get("/runs/{run_id}/dossier")
 def run_dossier(run_id: str, format: str = "pdf") -> Response:
     """SDLC dossier export (default PDF). Prefer this path over dossier.pdf for proxies."""
-    if format.lower() in ("html", "htm"):
+    fmt = format.lower()
+    if fmt in ("html", "htm"):
         return run_dossier_html(run_id)
     return _dossier_pdf_response(run_id)
 
@@ -300,14 +412,19 @@ def run_dossier_html(run_id: str) -> Response:
     if FACTORY_ENGINE != "fz":
         raise HTTPException(status_code=501, detail="Dossier export requires FACTORY_ENGINE=fz")
     try:
-        from dossier import generate_dossier_html
+        from dossier import get_or_generate_dossier_html
 
-        html = generate_dossier_html(run_id)
+        html = get_or_generate_dossier_html(run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Dossier export failed: {exc}") from exc
-    return Response(content=html, media_type="text/html; charset=utf-8")
+    filename = f'ai-factory-dossier-{run_id}.html'
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/runs/{run_id}/artifacts/{path:path}")

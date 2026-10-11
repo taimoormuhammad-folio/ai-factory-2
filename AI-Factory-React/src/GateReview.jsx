@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MobileFrame } from './Phone';
 import { mockups, smokeFeatures, smokeReport, sourceFiles, specDocument } from './gates';
+import { MobileBrand } from './Phone';
+import { productBrandInitial, productFilenameSlug, productShortBrand } from './productBrand.js';
 
 function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
@@ -64,12 +66,32 @@ function zipBlob(files) {
   return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
 }
 
-function GateActions({ onApprove, onReject }) {
+function GateActions({ onApprove, onReject, needsRiskNote = false, defaultApprover = 'Console User' }) {
   const [rejecting, setRejecting] = useState(false);
   const [comment, setComment] = useState('');
+  const [riskNote, setRiskNote] = useState('');
+  const [approver, setApprover] = useState(defaultApprover);
   const [error, setError] = useState('');
   return (
-    <form className="gate-actions" onSubmit={(event) => { event.preventDefault(); if (!comment.trim()) { setError('Add a comment before rejecting.'); return; } onReject(comment.trim()); }}>
+    <form
+      className="gate-actions"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!comment.trim()) {
+          setError('Add a comment before rejecting.');
+          return;
+        }
+        onReject(comment.trim(), { approver: approver.trim() || defaultApprover });
+      }}
+    >
+      <label htmlFor="gate-approver">Your name
+        <input id="gate-approver" value={approver} onChange={(event) => setApprover(event.target.value)} placeholder="Who is approving?" />
+      </label>
+      {needsRiskNote && !rejecting && (
+        <label htmlFor="gate-risk">Risk note (required for merge)
+          <textarea id="gate-risk" value={riskNote} placeholder="In your own words, at least 20 characters" onChange={(event) => { setRiskNote(event.target.value); setError(''); }} />
+        </label>
+      )}
       {rejecting && (
         <label htmlFor="gate-comment">Comment
           <textarea id="gate-comment" value={comment} placeholder="Tell the team what needs to change" onChange={(event) => { setComment(event.target.value); setError(''); }} autoFocus />
@@ -77,7 +99,23 @@ function GateActions({ onApprove, onReject }) {
       )}
       {error && <p role="alert" className="error">{error}</p>}
       <div className="modal-actions">
-        <button type="button" className="primary" onClick={onApprove}>Approve</button>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => {
+            if (!approver.trim() || approver.trim().length < 2) {
+              setError('Enter your name (who is approving).');
+              return;
+            }
+            if (needsRiskNote && riskNote.trim().length < 20) {
+              setError('Merge gate needs a risk note of at least 20 characters.');
+              return;
+            }
+            onApprove({ approver: approver.trim(), risk_note: riskNote.trim() });
+          }}
+        >
+          Approve
+        </button>
         {rejecting
           ? <button type="submit" className="danger">Confirm reject</button>
           : <button type="button" className="secondary" onClick={() => setRejecting(true)}>Reject</button>}
@@ -112,26 +150,45 @@ function FolderTree({ nodes, selected, onSelect, depth = 0 }) {
   ));
 }
 
-function SpecReview({ project }) {
-  const documentText = specDocument(project);
+function SpecReview({ project, productBrand, documentText: liveText }) {
+  const documentText = liveText || specDocument(project, productBrand);
+  const slug = productFilenameSlug(productBrand);
   return (
     <div className="gate-body">
-      <div className="gate-toolbar"><p>Review the specification before the team continues.</p><button type="button" className="secondary" onClick={() => downloadText('NOVA-specification.md', documentText, 'text/markdown')}>Download specification</button></div>
+      <div className="gate-toolbar"><p>Review the specification before the team continues.</p><button type="button" className="secondary" onClick={() => downloadText(`${slug}-specification.md`, documentText, 'text/markdown')}>Download specification</button></div>
       <article className="spec-sheet">{documentText}</article>
     </div>
   );
 }
 
-function DeployReview() {
-  const tree = useMemo(() => fileTree(sourceFiles), []);
-  const [selected, setSelected] = useState(sourceFiles[0]);
+function ArchitectureReview({ productBrand, documentText, summary }) {
+  const slug = productFilenameSlug(productBrand);
+  const body = documentText || 'Architecture and design documents are not available yet.';
+  return (
+    <div className="gate-body">
+      <div className="gate-toolbar">
+        <p>{summary || 'Review architecture, design system, and backlog before build starts.'}</p>
+        <button type="button" className="secondary" onClick={() => downloadText(`${slug}-architecture-pack.md`, body, 'text/markdown')}>Download pack</button>
+      </div>
+      <article className="spec-sheet">{body}</article>
+    </div>
+  );
+}
+
+function DeployReview({ productBrand, files }) {
+  const slug = productFilenameSlug(productBrand);
+  const list = files?.length ? files : sourceFiles;
+  const tree = useMemo(() => fileTree(list), [list]);
+  const [selected, setSelected] = useState(list[0]);
+  useEffect(() => { setSelected(list[0]); }, [list]);
+  if (!selected) return null;
   return (
     <div className="gate-body">
       <div className="gate-toolbar">
         <p>Open a file in the project structure, then approve the build.</p>
         <div className="gate-toolbar-actions">
           <button type="button" className="secondary" onClick={() => downloadText(selected.path.split('/').pop(), selected.code)}>Download file</button>
-          <button type="button" className="secondary" onClick={() => downloadBlob('nova-source.zip', zipBlob(sourceFiles))}>Download project</button>
+          <button type="button" className="secondary" onClick={() => downloadBlob(`${slug}-source.zip`, zipBlob(list))}>Download project</button>
         </div>
       </div>
       <div className="code-review">
@@ -142,10 +199,19 @@ function DeployReview() {
   );
 }
 
-function SmokeReview() {
+function SmokeReview({ productBrand, documentText }) {
+  const slug = productFilenameSlug(productBrand);
+  if (documentText) {
+    return (
+      <div className="gate-body">
+        <div className="gate-toolbar"><p>Release verification pack.</p><button type="button" className="secondary" onClick={() => downloadText(`${slug}-release.md`, documentText, 'text/markdown')}>Download report</button></div>
+        <article className="spec-sheet">{documentText}</article>
+      </div>
+    );
+  }
   return (
     <div className="gate-body">
-      <div className="gate-toolbar"><p>Smoke results grouped by feature.</p><button type="button" className="secondary" onClick={() => downloadText('NOVA-smoke-report.md', smokeReport(), 'text/markdown')}>Download report</button></div>
+      <div className="gate-toolbar"><p>Smoke results grouped by feature.</p><button type="button" className="secondary" onClick={() => downloadText(`${slug}-smoke-report.md`, smokeReport(productBrand), 'text/markdown')}>Download report</button></div>
       <div className="smoke-list">
         {smokeFeatures.map((group) => (
           <section key={group.feature}>
@@ -158,36 +224,86 @@ function SmokeReview() {
   );
 }
 
-const titles = { spec: 'Review specification', deploy: 'Review build', smoke: 'Review smoke tests' };
+const titles = {
+  spec: 'Review specification',
+  architecture: 'Review architecture & design',
+  design: 'Review mockups',
+  deploy: 'Review build',
+  smoke: 'Review smoke tests',
+};
 
-export function GateReview({ kind, project, onClose, onApprove, onReject }) {
+export function GateReview({
+  kind,
+  project,
+  productBrand = 'Project',
+  displayName,
+  documentText,
+  summary,
+  sourceFiles: liveFiles,
+  needsRiskNote = false,
+  onClose,
+  onApprove,
+  onReject,
+}) {
+  const brand = productShortBrand(displayName || productBrand || project?.projectName || 'Project');
   const ref = useRef();
   useEffect(() => { ref.current.showModal(); }, []);
   return (
     <dialog ref={ref} className="gate-dialog" onCancel={onClose} onClick={(event) => { if (event.target === ref.current) onClose(); }}>
-      <div className="modal-heading"><h2>{titles[kind]}</h2><button type="button" onClick={onClose} aria-label="Close dialog">×</button></div>
-      {kind === 'spec' && <SpecReview project={project} />}
-      {kind === 'deploy' && <DeployReview />}
-      {kind === 'smoke' && <SmokeReview />}
-      <GateActions onApprove={onApprove} onReject={onReject} />
+      <div className="modal-heading"><h2>{titles[kind] || 'Review'}</h2><button type="button" onClick={onClose} aria-label="Close dialog">×</button></div>
+      {kind === 'spec' && <SpecReview project={project} productBrand={brand} documentText={documentText} />}
+      {kind === 'architecture' && <ArchitectureReview productBrand={brand} documentText={documentText} summary={summary} />}
+      {kind === 'deploy' && <DeployReview productBrand={brand} files={liveFiles} />}
+      {kind === 'smoke' && <SmokeReview productBrand={brand} documentText={documentText} />}
+      <GateActions onApprove={onApprove} onReject={onReject} needsRiskNote={needsRiskNote} />
     </dialog>
   );
 }
 
-function MockScreen({ id }) {
+function MockScreen({ id, productBrand = 'Project' }) {
+  const initial = productBrandInitial(productBrand);
   if (id === 'signin') {
-    return <div className="mobile-content ready-app mock-screen"><div className="mobile-brand">NOVA <span>N</span></div><div className="ready-hero"><small>WELCOME</small><h3>Sign in to your workspace.</h3><p>Use the member account from the brief.</p></div><div className="mock-form"><span>Email</span><i /><span>Password</span><i /><b>Continue</b></div></div>;
+    return (
+      <div className="mobile-content ready-app mock-screen">
+        <MobileBrand productBrand={productBrand} />
+        <div className="ready-hero"><small>WELCOME</small><h3>Sign in to your workspace.</h3><p>Use the member account from the brief.</p></div>
+        <div className="mock-form"><span>Email</span><i /><span>Password</span><i /><b>Continue</b></div>
+      </div>
+    );
   }
   if (id === 'items') {
-    return <div className="mobile-content ready-app mock-screen"><div className="mobile-brand">NOVA <span>N</span></div><h4>Your items</h4>{['Project overview', 'Shared collection', 'Launch notes'].map((item) => <div className="nova-item" key={item}><span>▤</span><div><b>{item}</b><small>Updated today</small></div></div>)}<div className="mobile-bottom">{['Home', 'Explore', 'Saved', 'Profile'].map((item) => <span key={item}>{item}</span>)}</div></div>;
+    return (
+      <div className="mobile-content ready-app mock-screen">
+        <MobileBrand productBrand={productBrand} />
+        <h4>Your items</h4>
+        {['Project overview', 'Shared collection', 'Launch notes'].map((item) => (
+          <div className="nova-item" key={item}><span>▤</span><div><b>{item}</b><small>Updated today</small></div></div>
+        ))}
+        <div className="mobile-bottom">{['Home', 'Explore', 'Saved', 'Profile'].map((item) => <span key={item}>{item}</span>)}</div>
+      </div>
+    );
   }
   if (id === 'profile') {
-    return <div className="mobile-content ready-app mock-screen"><div className="mobile-brand">NOVA <span>N</span></div><div className="profile-avatar">N</div><h3>Your workspace</h3><p>Demo member</p><div className="skeleton-box">Personal workspace<br /><small>Ready for review</small></div></div>;
+    return (
+      <div className="mobile-content ready-app mock-screen">
+        <MobileBrand productBrand={productBrand} />
+        <div className="profile-avatar">{initial}</div>
+        <h3>Your workspace</h3>
+        <p>Demo member</p>
+        <div className="skeleton-box">Personal workspace<br /><small>Ready for review</small></div>
+      </div>
+    );
   }
-  return <div className="mobile-content ready-app mock-screen"><div className="mobile-brand">NOVA <span>N</span></div><div className="ready-hero"><small>YOUR WORKSPACE</small><h3>Everything, in one place.</h3><p>Pick up where you left off.</p><b className="mock-cta">Create new</b></div><div className="mobile-grid"><div className="tile">▣<b>My items</b><small>3 items</small></div><div className="tile">◇<b>Saved</b><small>1 item</small></div></div></div>;
+  return (
+    <div className="mobile-content ready-app mock-screen">
+      <MobileBrand productBrand={productBrand} />
+      <div className="ready-hero"><small>YOUR WORKSPACE</small><h3>Everything, in one place.</h3><p>Pick up where you left off.</p><b className="mock-cta">Create new</b></div>
+      <div className="mobile-grid"><div className="tile">▣<b>My items</b><small>3 items</small></div><div className="tile">◇<b>Saved</b><small>1 item</small></div></div>
+    </div>
+  );
 }
 
-export function MockupReview({ onClose, onApprove, onReject }) {
+export function MockupReview({ productBrand = 'Project', onClose, onApprove, onReject }) {
   const [index, setIndex] = useState(0);
   const mockup = mockups[index];
   useEffect(() => {
@@ -204,7 +320,7 @@ export function MockupReview({ onClose, onApprove, onReject }) {
       <div className="mockup-bar"><b>UI/UX mockups</b><span>{mockup.name}</span><button type="button" onClick={onClose} aria-label="Close mockups">×</button></div>
       <div className="mockup-stage">
         <button type="button" className="mockup-nav" aria-label="Previous mockup" disabled={index === 0} onClick={() => setIndex(index - 1)}>‹</button>
-        <MobileFrame><MockScreen id={mockup.id} /></MobileFrame>
+        <MobileFrame><MockScreen id={mockup.id} productBrand={productBrand} /></MobileFrame>
         <button type="button" className="mockup-nav" aria-label="Next mockup" disabled={index === mockups.length - 1} onClick={() => setIndex(index + 1)}>›</button>
       </div>
       <div className="mockup-dots">{mockups.map((item, itemIndex) => <button type="button" key={item.id} aria-label={item.name} aria-current={itemIndex === index ? 'true' : undefined} onClick={() => setIndex(itemIndex)} />)}</div>

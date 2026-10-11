@@ -26,7 +26,9 @@ FZ_WORKER_SCRIPT = Path(__file__).resolve().parent / "fz_worker.py"
 def _ensure_fz_env() -> None:
     load_dotenv(AI_FACTORY_FZ_ROOT / ".env", override=True)
     os.environ["SDLC_HOME"] = str(AI_FACTORY_FZ_ROOT)
-    os.environ.setdefault("SDLC_GATE_MODE", "auto")
+    # Prefer pipeline.ui gate_mode (async). Override with SDLC_GATE_MODE in .env if needed.
+    if not os.environ.get("SDLC_GATE_MODE", "").strip():
+        os.environ["SDLC_GATE_MODE"] = "async"
 
     provider = os.getenv("LLM_PROVIDER", "cursor_cli").strip().lower() or "cursor_cli"
     if provider in ("cursor_cli", "cursor_proxy"):
@@ -330,7 +332,7 @@ def terminate_fz_workers(reason: str = "Superseded by a new run") -> list[str]:
 def _worker_env() -> dict[str, str]:
     env = os.environ.copy()
     env["SDLC_HOME"] = str(AI_FACTORY_FZ_ROOT)
-    env.setdefault("SDLC_GATE_MODE", "auto")
+    env.setdefault("SDLC_GATE_MODE", "async")
     env.setdefault("SDLC_SANDBOX", "local")
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"

@@ -255,12 +255,40 @@ def _release_replanning(state: Any) -> bool:
     return bool(getattr(state, "prd", None)) and getattr(state, "backlog", None) is None
 
 
+def _pending_gate_payload(run_id: str) -> dict[str, Any] | None:
+    """Read sdlc-v2 gates/<G>.pending.json for the React console."""
+    from fz_gates import read_pending_gate
+
+    return read_pending_gate(run_id)
+
+
+def _ui_gate_meta(gate: str) -> dict[str, Any]:
+    from fz_gates import ui_gate_meta
+
+    return ui_gate_meta(gate)
+
+
 def infer_ui_phase(state: Any) -> str:
     """Best-effort phase label for the React pipeline step map (not the 11-stage carousel)."""
     status = getattr(state, "status", "running")
+    pending = _pending_gate_payload(getattr(state, "run_id", "") or "")
+    if pending:
+        gate = pending.get("gate")
+        if gate == "prd":
+            return "prd_review"
+        if gate in ("architecture", "estimate", "ui"):
+            return "design"
+        if gate in ("merge", "release", "production"):
+            return "release"
+        return "prd_review"
+
     if status == "completed" and not _release_replanning(state):
         return "complete"
     if status == "stopped" and not _release_replanning(state):
+        # Waiting for a gate shows as stopped with stop_reason; without pending file it is a real stop.
+        reason = str(getattr(state, "stop_reason", "") or "")
+        if "Waiting for" in reason or "waiting for" in reason:
+            return "prd_review"
         return "failed"
 
     if state.prd and not state.gate_approved("prd"):
@@ -345,9 +373,9 @@ def infer_ui_stage_index(state: Any) -> int:
     if phase == "qa":
         return 8
 
-    if not state.architecture:
-        return 2
     if state.architecture and not state.gate_approved("architecture"):
+        return 3
+    if not state.architecture:
         return 2
     if not state.design:
         return 3
@@ -355,7 +383,7 @@ def infer_ui_stage_index(state: Any) -> int:
         return 4
 
     if phase in ("release", "delivery", "browser", "client_review"):
-        return 9 if phase == "browser" else 10
+        return 9 if phase in ("browser", "release") else 10
     return 4
 
 
@@ -610,6 +638,11 @@ def publish_fz_run_state(
     elif state.status == "stopped":
         ui_status = "failed"
 
+    pending_raw = _pending_gate_payload(state.run_id)
+    if pending_raw and pending_raw.get("gate"):
+        # Async gate wait: keep console "running"/awaiting, not failed.
+        ui_status = "running"
+
     phase = infer_ui_phase(state)
     ui_active_stage = infer_ui_stage_index(state)
     steps = pipeline_steps_for_state(state, ui_status)
@@ -628,11 +661,29 @@ def publish_fz_run_state(
 
     prd_gate = state.gate_approved("prd")
     arch_gate = state.gate_approved("architecture")
+    est_gate = state.gate_approved("estimate")
+    ui_gate = state.gate_approved("ui")
+    merge_gate = state.gate_approved("merge")
     rel_gate = state.gate_approved("release")
+    prod_gate = state.gate_approved("production")
+
+    pending_gate = None
+    if pending_raw and pending_raw.get("gate"):
+        pending_gate = dict(pending_raw)
+        ui_active_stage = int(pending_raw.get("ui_index") or ui_active_stage)
 
     qa_done = any(mp.status in ("done", "partial") for mp in state.build.milestones.values())
 
     display_name = infer_product_display_name(state, project_name)
+
+    def _approval_status(approved: bool, gate_name: str) -> str | None:
+        if approved:
+            return "approved"
+        if pending_gate and pending_gate.get("gate") == gate_name:
+            return "pending"
+        return None
+
+    waiting = bool(pending_gate)
     payload = {
         "run_id": state.run_id,
         "project_name": project_name,
@@ -650,22 +701,28 @@ def publish_fz_run_state(
         "flutter_project_dir": flutter_dir,
         "server_project_dir": str(server_dir.resolve()) if server_dir.is_dir() else None,
         "checkpoint": checkpoint_msg,
+        "pending_gate": pending_gate,
         "checks": {
             "code_review_passed": bool(state.architecture),
             "security_passed": True,
             "qa_passed": qa_done,
             "post_deploy_passed": bool(state.release.verified),
-            "deploy_approved": rel_gate,
+            "deploy_approved": rel_gate or prod_gate,
             "flutter_artifacts_ready": flutter_artifacts_ready,
         },
         "approvals": {
-            "prd": "approved" if prd_gate else None,
-            "release": "approved" if rel_gate else None,
-            "deploy": "approved" if state.release.production == "deployed" else None,
+            "prd": _approval_status(prd_gate, "prd"),
+            "architecture": _approval_status(arch_gate, "architecture"),
+            "estimate": _approval_status(est_gate, "estimate"),
+            "ui": _approval_status(ui_gate, "ui"),
+            "merge": _approval_status(merge_gate, "merge"),
+            "release": _approval_status(rel_gate, "release"),
+            "production": _approval_status(prod_gate, "production"),
+            "deploy": "approved" if getattr(state.release, "production", "") == "deployed" else None,
         },
         "artifacts_index": list_fz_artifacts(state.run_id),
         "usage": _usage_payload(state),
-        "error": state.stop_reason if ui_status == "failed" else None,
+        "error": None if waiting else (state.stop_reason if ui_status == "failed" else None),
     }
 
     RUN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)

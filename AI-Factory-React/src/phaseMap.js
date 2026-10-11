@@ -105,6 +105,10 @@ export function stageProgress(statusMap, uiIndex) {
 
 /** Active UI stage index from pipeline state. */
 export function activeUiStage(runState) {
+  const pendingIndex = runState?.pending_gate?.ui_index;
+  if (typeof pendingIndex === 'number' && !Number.isNaN(pendingIndex)) {
+    return Math.max(0, Math.min(UI_STAGE_COUNT - 1, pendingIndex));
+  }
   if (typeof runState?.ui_active_stage === 'number' && !Number.isNaN(runState.ui_active_stage)) {
     return Math.max(0, Math.min(UI_STAGE_COUNT - 1, runState.ui_active_stage));
   }

@@ -1,5 +1,6 @@
-export const GATE_HOLD = 48;
+﻿export const GATE_HOLD = 48;
 
+/** react-base stage gates (demo simulation + visual mapping for fz). */
 export const gates = [
   { index: 1, kind: 'spec', label: 'Review specification' },
   { index: 3, kind: 'design', label: 'Review mockups' },
@@ -8,6 +9,83 @@ export const gates = [
 ];
 
 export const gateIndexes = gates.map((gate) => gate.index);
+
+/** sdlc-v2 FZ gates (G1-G7) -> react-base review UI. */
+export const FZ_GATES = {
+  prd: {
+    index: 1,
+    kind: 'spec',
+    label: 'Review specification (G1)',
+    documents: ['docs/prd.md', 'docs/clarifications.md', 'docs/spec.md', 'docs/intent.md'],
+  },
+  architecture: {
+    index: 2,
+    kind: 'architecture',
+    label: 'Review architecture (G2)',
+    documents: [
+      'docs/architecture.md',
+      'docs/openapi.yaml',
+      'docs/schema.prisma',
+      'docs/design_system.md',
+      'docs/backlog.md',
+    ],
+  },
+  estimate: {
+    index: 4,
+    kind: 'architecture',
+    label: 'Review estimates (G3)',
+    documents: ['docs/backlog.md', 'docs/plan.md'],
+  },
+  ui: {
+    index: 3,
+    kind: 'design',
+    label: 'Review UI mockups (G4)',
+    documents: ['docs/ui/index.html', 'docs/ui-design.md', 'docs/design_system.md'],
+  },
+  merge: {
+    index: 7,
+    kind: 'deploy',
+    label: 'Review merge (G5)',
+    documents: ['docs/package.md', 'reports/run_summary.md'],
+    needsRiskNote: true,
+  },
+  release: {
+    index: 9,
+    kind: 'smoke',
+    label: 'Review release (G6)',
+    documents: ['reports/run_summary.md', 'infra/README.md'],
+  },
+  production: {
+    index: 10,
+    kind: 'smoke',
+    label: 'Approve production (G7)',
+    documents: ['reports/release_notes.md', 'reports/run_summary.md'],
+  },
+};
+
+export function fzGateFromPending(pending) {
+  if (!pending?.gate) return null;
+  const mapped = FZ_GATES[pending.gate] || {
+    index: pending.ui_index ?? 1,
+    kind: pending.kind || 'spec',
+    label: pending.label || `Review ${pending.gate}`,
+    documents: pending.documents || [],
+  };
+  return {
+    ...mapped,
+    gate: pending.gate,
+    gate_id: pending.gate_id || '',
+    summary: pending.summary || '',
+    documents: pending.documents?.length ? pending.documents : mapped.documents,
+    needsRiskNote: Boolean(pending.needs_risk_note || mapped.needsRiskNote),
+  };
+}
+
+export function gateForStage(stageIndex, pendingGate) {
+  const fz = fzGateFromPending(pendingGate);
+  if (fz && fz.index === stageIndex) return fz;
+  return gates.find((g) => g.index === stageIndex) || null;
+}
 
 export const sourceFiles = [
   {
@@ -147,3 +225,4 @@ export const mockups = [
   { id: 'items', name: 'Items' },
   { id: 'profile', name: 'Profile' },
 ];
+

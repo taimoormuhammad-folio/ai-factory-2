@@ -42,22 +42,35 @@ def _publish_from_disk(run_id: str, project_name: str, complexity: str, checkpoi
 
 def _watch_state(run_id: str, project_name: str, complexity: str, stop: threading.Event) -> None:
     last_mtime = 0.0
+    last_gates_sig = ""
     last_heartbeat = 0.0
     while not stop.is_set():
         try:
             from agentic_sdlc.settings import RUNS_DIR
 
             state_path = RUNS_DIR / run_id / "state.json"
+            gates_dir = RUNS_DIR / run_id / "gates"
             now = time.time()
+            changed = False
             if state_path.is_file():
                 mtime = state_path.stat().st_mtime
                 if mtime != last_mtime:
                     last_mtime = mtime
-                    _publish_from_disk(run_id, project_name, complexity, checkpoint_msg="Checkpoint")
-                elif now - last_heartbeat >= 120:
-                    # Keep run_state.updated_at fresh during long agent steps (avoids false "stale").
-                    last_heartbeat = now
-                    _publish_from_disk(run_id, project_name, complexity, checkpoint_msg="Worker active")
+                    changed = True
+            # sdlc-v2 async gates: gates/G*.pending.json (and .gate) appear while waiting.
+            if gates_dir.is_dir():
+                sig = "|".join(
+                    f"{p.name}:{p.stat().st_mtime}"
+                    for p in sorted(gates_dir.glob("*.pending.json"))
+                )
+                if sig != last_gates_sig:
+                    last_gates_sig = sig
+                    changed = True
+            if changed:
+                _publish_from_disk(run_id, project_name, complexity, checkpoint_msg="Checkpoint")
+            elif now - last_heartbeat >= 120:
+                last_heartbeat = now
+                _publish_from_disk(run_id, project_name, complexity, checkpoint_msg="Worker active")
         except Exception as exc:
             print(f"state watch error: {exc}", file=sys.stderr)
         stop.wait(2.0)
@@ -147,6 +160,12 @@ def main() -> int:
             {"stop_reason": flow.state.stop_reason or None},
         )
         if flow.state.status == "completed":
+            try:
+                from fz_deepeval import maybe_start_auto
+
+                maybe_start_auto(run_id)
+            except Exception:
+                pass
             return 0
         return 1
     except Exception as exc:

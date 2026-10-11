@@ -1,9 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { stages, examples } from './data';
 import { validateFiles } from './engine';
-import { gates } from './gates.js';
+import { gateForStage, fzGateFromPending } from './gates.js';
 import { GateReview, MockupReview } from './GateReview.jsx';
 import { MobileFrame, StageSkeleton, ReadyApp } from './Phone';
+import {
+  productShortBrand,
+  resolveProductDisplayName,
+  stageCardProductLine,
+} from './productBrand.js';
 import {
   ApiError,
   fetchRandomBrief,
@@ -16,6 +21,8 @@ import {
   startEmulatorRun,
   stopEmulatorRun,
   startRun,
+  markRunDemoReady,
+  decideGate,
   downloadRunDossier,
 } from './api.js';
 import { displayAgentName } from './agentLabels.js';
@@ -32,6 +39,8 @@ import {
 } from './phaseMap.js';
 import { buildProjectJourney } from './journeyMap.js';
 import { buildStageIterations } from './stageIterations.js';
+import { stageChecklistFlags, stageChecklistFocusLabel } from './stageChecklist.js';
+import { StageChecklistCarousel } from './StageChecklistCarousel.jsx';
 import { stageDocumentCandidates } from './stageDocuments.js';
 import { connectRun } from './runSync.js';
 import History from './History.jsx';
@@ -71,6 +80,7 @@ function projectFromRunState(state, fallbackText = '') {
     complexity: state.complexity || 'standard',
     estimatedMinutes: state.estimated_minutes,
     projectName: state.project_name || 'Project',
+    productName: state.product_name || state.project_name || 'Project',
   };
 }
 
@@ -632,6 +642,10 @@ function Dashboard({ project, onReset, onOpenHistory }) {
   const [gateOpen, setGateOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [dossierBusy, setDossierBusy] = useState(null);
+  const [demoReadyBusy, setDemoReadyBusy] = useState(false);
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateDocumentText, setGateDocumentText] = useState('');
+  const [gateDocsLoading, setGateDocsLoading] = useState(false);
   const navRef = useRef();
   const detailScrollRef = useRef(null);
 
@@ -662,13 +676,22 @@ function Dashboard({ project, onReset, onOpenHistory }) {
     if (detailScrollRef.current) detailScrollRef.current.scrollTop = 0;
   }, [stageIndex]);
 
-  const gateInfo = gates.find((g) => g.index === stageIndex);
+  const gateInfo = gateForStage(stageIndex, runState?.pending_gate);
+  const pendingFzGate = fzGateFromPending(runState?.pending_gate);
+  const awaitingGate = Boolean(pendingFzGate && pendingFzGate.index === stageIndex);
   const isFzEngine = runState?.factory_engine === 'fz';
+  const showDemoReady =
+    isFzEngine &&
+    project.runId &&
+    !run.complete &&
+    !run.failed &&
+    runState?.build_progress?.done === runState?.build_progress?.total &&
+    runState?.build_progress?.total > 0;
   const preview =
     !isFzEngine && run.browserReady && project.runId ? buildPreviewUrl(project.runId) : null;
   const showPreview = Boolean(preview && (run.browserReady || run.complete));
-  const displayName =
-    runState?.product_name || runState?.project_name || project.projectName || 'Project';
+  const displayName = resolveProductDisplayName(runState, project);
+  const productBrand = productShortBrand(displayName);
   const flutterDir =
     runState?.flutter_project_dir ||
     (project.runId ? `apps/${project.runId}/flutter` : null);
@@ -689,13 +712,14 @@ function Dashboard({ project, onReset, onOpenHistory }) {
   const stageUsage = filterUsageForStage(runState?.usage, stageIndex);
   const featureLines = deliveryCopy?.deployLines || stage.card2.slice(1);
   const stageDoc = stageDocumentCandidates(stageIndex, runState?.artifacts_index || []);
+  const checklistFlags = stageChecklistFlags(runState, stageIndex);
+  const checklistFocus = stageChecklistFocusLabel(stage.check, checklistFlags);
 
   const card1Title = deliveryCopy?.card1Title || stage.card1[0];
   const card1Name =
     stageIndex === 0 && project.files.length
       ? project.files[0].name
-      : deliveryCopy?.card1Name ||
-        stage.card1[1].replace(/^NOVA\s*·\s*/i, `${displayName} · `);
+      : deliveryCopy?.card1Name || stageCardProductLine(stage.card1[1], displayName);
   const card1Sub =
     deliveryCopy?.card1Sub ||
     (stageDoc.paths[0] ? stageDoc.paths[0] : stage.card1[2]);
@@ -870,11 +894,15 @@ function Dashboard({ project, onReset, onOpenHistory }) {
         ? stageIndex < run.active
           ? 'Completed'
           : 'Upcoming'
-        : stageIndex === 7
-          ? run.approval === 'approved'
-            ? 'Approved'
-            : 'Awaiting approval'
-          : 'In progress';
+        : awaitingGate
+          ? 'Awaiting approval'
+          : stageIndex === 7
+            ? run.approval === 'approved'
+              ? 'Approved'
+              : runState?.approvals?.release === 'pending'
+                ? 'Awaiting approval'
+                : 'In progress'
+            : 'In progress';
 
   const fzWorkLabel = fzCurrentWorkLabel(runState);
   const footerProgress = buildProgressFooterLine(runState, project);
@@ -882,6 +910,93 @@ function Dashboard({ project, onReset, onOpenHistory }) {
 
   function review(i) {
     setView(i === run.active ? null : i);
+  }
+
+  async function handleDemoReady() {
+    if (!project.runId || demoReadyBusy) return;
+    setDemoReadyBusy(true);
+    try {
+      await markRunDemoReady(project.runId);
+      const fresh = await getRun(project.runId);
+      setRunState(fresh);
+    } catch (err) {
+      window.alert(err instanceof ApiError ? err.message : 'Could not mark run demo-ready');
+    } finally {
+      setDemoReadyBusy(false);
+    }
+  }
+
+  async function loadGateDocuments(info) {
+    if (!project.runId || !info?.documents?.length) {
+      setGateDocumentText('');
+      return;
+    }
+    setGateDocsLoading(true);
+    const parts = [];
+    for (const path of info.documents) {
+      try {
+        const res = await fetchArtifact(path, project.runId);
+        if (res?.content) {
+          parts.push(`# ${path}\n\n${res.content.trim()}`);
+        }
+      } catch {
+        /* skip missing */
+      }
+    }
+    setGateDocumentText(parts.join('\n\n---\n\n'));
+    setGateDocsLoading(false);
+  }
+
+  async function openGateReview() {
+    setGateOpen(true);
+    if (isFzEngine && gateInfo?.documents) {
+      await loadGateDocuments(gateInfo);
+    }
+  }
+
+  async function handleGateApprove(meta = {}) {
+    if (!isFzEngine || !pendingFzGate?.gate || !project.runId) {
+      setGateOpen(false);
+      return;
+    }
+    setGateBusy(true);
+    try {
+      await decideGate(project.runId, pendingFzGate.gate, {
+        approved: true,
+        approver: meta.approver || 'Console User',
+        risk_note: meta.risk_note || '',
+        role: pendingFzGate.gate === 'merge' ? 'developer of record' : 'product owner',
+      });
+      setGateOpen(false);
+      const fresh = await getRun(project.runId);
+      setRunState(fresh);
+    } catch (err) {
+      window.alert(err instanceof ApiError ? err.message : 'Could not approve gate');
+    } finally {
+      setGateBusy(false);
+    }
+  }
+
+  async function handleGateReject(comment, meta = {}) {
+    if (!isFzEngine || !pendingFzGate?.gate || !project.runId) {
+      setGateOpen(false);
+      return;
+    }
+    setGateBusy(true);
+    try {
+      await decideGate(project.runId, pendingFzGate.gate, {
+        approved: false,
+        feedback: comment,
+        approver: meta.approver || 'Console User',
+      });
+      setGateOpen(false);
+      const fresh = await getRun(project.runId);
+      setRunState(fresh);
+    } catch (err) {
+      window.alert(err instanceof ApiError ? err.message : 'Could not reject gate');
+    } finally {
+      setGateBusy(false);
+    }
   }
 
   function download() {
@@ -1010,20 +1125,19 @@ function Dashboard({ project, onReset, onOpenHistory }) {
       <main className="dashboard">
         <section className="factory-floor">
           <div className="stage-hero" key={stage.key}>
-            <span className="eyebrow">
-              STEP {stageIndex + 1} OF {stages.length}&nbsp; / &nbsp;{stage.key.toUpperCase()}
-            </span>
-            <h1>{stage.title}</h1>
-            <p>{stage.description}</p>
-            <div className="checklist">
-              {stage.check.map((x, i) => (
-                <span key={x}>
-                  <i className={progress >= (i + 1) * 20 ? 'checked' : ''}>
-                    {progress >= (i + 1) * 20 ? '✓' : '·'}
-                  </i>
-                  {x}
+            <div className="stage-hero-top">
+              <div className="stage-hero-copy">
+                <span className="eyebrow">
+                  STEP {stageIndex + 1} OF {stages.length}&nbsp; / &nbsp;{stage.key.toUpperCase()}
                 </span>
-              ))}
+                <h1>{stage.title}</h1>
+                <p>{stage.description}</p>
+              </div>
+              <StageChecklistCarousel
+                labels={stage.check}
+                flags={checklistFlags}
+                stageKey={stage.key}
+              />
             </div>
           </div>
           <div className="agent-scene">
@@ -1133,7 +1247,7 @@ function Dashboard({ project, onReset, onOpenHistory }) {
                 <p>
                   {fzWorkLabel && !viewing && !done
                     ? fzWorkLabel
-                    : stage.check[Math.min(4, Math.floor(progress / 20))]}
+                    : checklistFocus || stage.check[0]}
                 </p>
               </div>
               <div>
@@ -1212,25 +1326,36 @@ function Dashboard({ project, onReset, onOpenHistory }) {
           <div className="device-area">
             <MobileFrame previewUrl={showPreview ? preview : null}>
               {showPreview ? null : done || (isFzEngine && flutterReady) ? (
-                <ReadyApp />
+                <ReadyApp productBrand={productBrand} />
               ) : (
-                <StageSkeleton stage={stageIndex} progress={progress} />
+                <StageSkeleton stage={stageIndex} progress={progress} productBrand={productBrand} />
               )}
             </MobileFrame>
-            {gateInfo && (
+            {gateInfo && (awaitingGate || !isFzEngine) && (
               <div className="stage-actions">
-                <button className="secondary" type="button" onClick={() => setGateOpen(true)}>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={openGateReview}
+                  disabled={gateBusy || gateDocsLoading}
+                >
                   {gateInfo.label}
                 </button>
-                <small>Open the review pack for this stage.</small>
+                <small>
+                  {awaitingGate
+                    ? gateDocsLoading
+                      ? 'Loading review pack…'
+                      : 'Approve or reject to continue the pipeline.'
+                    : 'Open the review pack for this stage.'}
+                </small>
               </div>
             )}
-            {stageIndex === 7 && !viewing && !run.complete && (
+            {stageIndex === 7 && !viewing && !run.complete && !awaitingGate && (
               <div className="stage-actions">
                 <span className="approval-status">
                   Release approval: {run.approval || 'pending'}
                 </span>
-                <small>Approval is handled by the simulated client in the pipeline.</small>
+                <small>Approval is handled by the release gate when enabled.</small>
               </div>
             )}
             {stageIndex === lastStage && showPreview && !done && (
@@ -1320,6 +1445,11 @@ function Dashboard({ project, onReset, onOpenHistory }) {
           {footerProgress ? ` · ${footerProgress}` : ''}
         </span>
         <div>
+          {showDemoReady && (
+            <button type="button" onClick={handleDemoReady} disabled={demoReadyBusy}>
+              {demoReadyBusy ? 'Stopping QA…' : 'Skip QA for demo'}
+            </button>
+          )}
           {viewing && (
             <button type="button" onClick={() => setView(null)}>
               Return to live stage
@@ -1429,7 +1559,7 @@ flutter run`}</pre>
         <Modal title={`${displayName} · HTML preview`} onClose={() => setModal(null)}>
           <div className="app-modal">
             <MobileFrame previewUrl={preview} wide>
-              {!preview && <ReadyApp />}
+              {!preview && <ReadyApp productBrand={productBrand} />}
             </MobileFrame>
           </div>
         </Modal>
@@ -1492,20 +1622,26 @@ flutter run`}</pre>
           </div>
         </Modal>
       )}
-      {gateOpen && gateInfo?.kind === 'design' && (
+      {gateOpen && gateInfo?.kind === 'design' && !isFzEngine && (
         <MockupReview
+          productBrand={productBrand}
           onClose={() => setGateOpen(false)}
-          onApprove={() => setGateOpen(false)}
-          onReject={() => setGateOpen(false)}
+          onApprove={handleGateApprove}
+          onReject={(comment, meta) => handleGateReject(comment, meta)}
         />
       )}
-      {gateOpen && gateInfo && gateInfo.kind !== 'design' && (
+      {gateOpen && gateInfo && (gateInfo.kind !== 'design' || isFzEngine) && (
         <GateReview
-          kind={gateInfo.kind}
+          kind={gateInfo.kind === 'design' ? 'architecture' : gateInfo.kind}
           project={project}
+          productBrand={productBrand}
+          displayName={displayName}
+          documentText={gateDocumentText}
+          summary={gateInfo.summary || pendingFzGate?.summary || ''}
+          needsRiskNote={Boolean(gateInfo.needsRiskNote || pendingFzGate?.needsRiskNote)}
           onClose={() => setGateOpen(false)}
-          onApprove={() => setGateOpen(false)}
-          onReject={() => setGateOpen(false)}
+          onApprove={handleGateApprove}
+          onReject={(comment, meta) => handleGateReject(comment, meta)}
         />
       )}
     </div>

@@ -34,7 +34,7 @@ async function fetchJson(path, init = {}) {
       } else if (typeof detail === 'string') {
         message = detail;
       }
-    } catch {
+    } catch (_) {
       /* plain text error body */
     }
     if (res.status === 409 && runId) {
@@ -90,6 +90,39 @@ export function resumeRun(runId) {
   });
 }
 
+/** Stop QA loops and mark run complete when all work items are built (manual Lumen demo). */
+export function markRunDemoReady(runId) {
+  return fetchJson(`/runs/${runId}/demo-ready`, { method: 'POST' });
+}
+
+/** Approve or reject an FZ async gate (prd / architecture / ui / …). */
+export function decideGate(runId, gate, {
+  approved,
+  feedback = '',
+  approver = 'Console User',
+  role = '',
+  risk_note = '',
+  resume = true,
+} = {}) {
+  return fetchJson(`/runs/${runId}/gates/${gate}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approved, feedback, approver, role, risk_note, resume }),
+  });
+}
+
+export function startDeepEval(runId) {
+  return fetchJson(`/runs/${runId}/deepeval`, { method: 'POST' });
+}
+
+export function getDeepEvalStatus(runId) {
+  return fetchJson(`/runs/${runId}/deepeval`);
+}
+
+export function deepEvalReportUrl(runId) {
+  return `${BASE}/runs/${runId}/deepeval.html`;
+}
+
 export function fetchArtifact(path, runId) {
   const url = runId
     ? `/runs/${runId}/artifacts/${path}`
@@ -120,8 +153,7 @@ export async function downloadCombinedDossier(runIds) {
   URL.revokeObjectURL(a.href);
 }
 
-/** Download SDLC dossier (read-only; safe during active runs). @param {'pdf'|'html'} format */
-export async function downloadRunDossier(runId, format = 'pdf') {
+async function downloadDossierBlob(runId, format) {
   const fmt = format === 'html' ? 'html' : 'pdf';
   const res = await fetch(`${BASE}/runs/${encodeURIComponent(runId)}/dossier?format=${fmt}`, {
     signal: AbortSignal.timeout(120000),
@@ -132,20 +164,26 @@ export async function downloadRunDossier(runId, format = 'pdf') {
     try {
       const parsed = JSON.parse(raw);
       if (typeof parsed.detail === 'string') message = parsed.detail;
-    } catch {
+    } catch (_) {
       /* plain text */
     }
     throw new ApiError(message, { status: res.status });
   }
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
+  const ext = fmt === 'html' ? 'html' : 'pdf';
+  const objectUrl = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = `ai-factory-dossier-${runId}.${fmt === 'html' ? 'html' : 'pdf'}`;
+  a.href = objectUrl;
+  a.download = `ai-factory-dossier-${runId}.${ext}`;
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  URL.revokeObjectURL(objectUrl);
+}
+
+/** Download SDLC dossier (read-only; safe during active runs). format: pdf | html */
+export async function downloadRunDossier(runId, format = 'pdf') {
+  await downloadDossierBlob(runId, format);
 }
 
 export function previewUrl(runId) {
