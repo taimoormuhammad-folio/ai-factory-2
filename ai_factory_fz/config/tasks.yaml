@@ -1,132 +1,129 @@
 # Task prompts per phase. {placeholders} are filled by the flow before the task runs.
 # Each task's structured output model is set in code (src/agentic_sdlc/crews/).
 
-customer_brief:
-  agent: customer
-  description: |
-    Here is the initial product brief:
-
-    ---
-    {brief}
-    ---
-
-    Expand it into a structured product brief from your point of view as the
-    business owner. Fill gaps with realistic business decisions and list the
-    questions you have not decided yet.
-  expected_output: A structured product brief.
-
-spec_questions:
-  agent: spec_writer
-  description: |
-    You are preparing to write the PRD for this product.
-
-    Product brief:
-    {product_brief}
-
-    Questions already asked and answered:
-    {qa_history}
-
-    This is clarification round {round} of at most {max_rounds}.
-    List only the questions whose answers would change the requirements
-    (scope, user flows, business rules, payments, delivery, returns, roles).
-    Do not repeat answered questions. If you have enough to write a complete
-    PRD, return an empty question list and set ready to true.
-  expected_output: A list of open questions (can be empty) and whether you are ready.
-
-customer_answers:
-  agent: customer
-  description: |
-    Your product brief:
-    {product_brief}
-
-    The spec writer asks:
-    {questions}
-
-    Answer every question directly, as the business owner. Keep answers
-    consistent with the brief and with a realistic first release.
-  expected_output: One answer per question.
-
 write_prd:
-  agent: spec_writer
+  agent: business_analyst
   description: |
-    Write the product requirements document.
+    Write the specification (spec.md) from the Product Owner's intent. You never invent business
+    rules or choose technology: anything the intent does not settle goes into open_questions for the
+    Product Owner, who answers them at the spec gate.
 
-    Product brief:
-    {product_brief}
-
-    Clarifications (questions and customer answers):
-    {qa_history}
+    Intent from the Product Owner:
+    {intent}
 
     Target stack (for context only; do not design the architecture):
     {stack}
 
-    Reviewer feedback on the previous draft (address all of it, empty if first draft):
+    Product Owner feedback on the previous draft, including answers to open questions (address all of
+    it; empty if first draft):
     {revision_notes}
 
     Scope for this run:
     {scope_rules}
 
     Rules:
-    - Story ids are US-001, US-002, ... Every story has at least two
-      acceptance criteria in Given/When/Then form.
-    - Mark priority as must, should or could. Keep the first release focused:
-      must-haves only cover what is needed to sell and fulfil an order.
-    - Include non-functional requirements (performance, security, privacy,
-      accessibility, supported platforms) and an explicit out-of-scope list.
-  expected_output: A complete PRD.
+    - Story ids are US-001, US-002, ... Every story has at least two testable acceptance criteria in
+      Given/When/Then form. Every criterion has a stable id unique across the spec: AC-01, AC-02, ...
+      (tests and acceptance evidence refer to these ids, so do not renumber them in revisions).
+    - Mark priority as must, should or could. Keep the first release focused.
+    - List edge cases, non-functional requirements (performance, security, privacy, accessibility,
+      platforms), an explicit out-of-scope list, assumptions and open questions.
+  expected_output: A complete spec with stories, acceptance criteria ids, edge cases and open questions.
 
-plan_backlog:
-  agent: project_manager
+design_wbs:
+  agent: architect
   description: |
-    Create the work breakdown structure and estimates for the solution the Architect and the
-    UI/UX designer designed. Plan the SOLUTION, not just the requirements.
+    Break your design into the work breakdown structure (WBS): work packages (WP-01...)
+    of small tasks (WI-001...). Builders work task by task and may write only the paths a task owns.
 
-    Approved PRD:
+    Spec:
     {prd}
 
-    The solution to build (from the architecture):
+    The solution (your design):
     {solution}
 
-    App screens (from the design):
-    {screens}
+    Scope limits (a WBS over the work-item limit is rejected, and the Project manager cannot cut tasks later):
+    {scope_rules}
 
     Target stack: {stack}
 
-    Scope for this run:
-    {scope_rules}
+    Repository layout (fixed by the build tooling):
+    {layout}
+
+    Component folders (a task owns paths only inside its component's folder) and the commands its
+    verify command may start with:
+    {workdirs}
 
     Reviewer feedback on the previous version (address all of it, empty if first draft):
     {revision_notes}
 
     Rules:
-    - Hierarchy: epics (E-01...) -> features (a short name per work item, e.g. "Cart API") -> work
-      items (WI-001...). Milestones M1, M2... in delivery order, each ending in a testable slice.
-    - Link every work item to what it builds: backend module names, the exact operationIds it
-      implements (backend) or calls (app), Prisma model names, screen ids (SCR-..).
-    - Coverage: every API operation must be implemented by the backend item(s) that own it; every
-      data model and every screen must be covered by some item. Only use names that exist above.
-    - Dependencies follow the design: an app item that calls an operation depends on the backend
-      item that implements it; the project setup comes first. No cycles.
-    - Infrastructure (Dockerfile, compose, CI) is an infra work item built with the rest; the
-      release phase only verifies it.
-    - Estimate each item in points (1-8; split anything larger) with complexity, risk and confidence
-      (low/medium/high) and a one-line rationale naming what drives the size (e.g. "atomic upsert +
-      99-cap rule + 4 endpoints"). Be honest about risk: new infrastructure, payments, auth and
-      concurrency are higher risk.
-    - Every must-have story is covered by at least one work item.
-  expected_output: A work breakdown structure with linked, estimated work items and ordered milestones.
+    - Each task: component, the files or folders it owns (globs like server/src/cart/**), a verify
+      command that proves it works (e.g. npm test -- cart, flutter test test/cart), the stories and
+      the acceptance criteria (AC-..) it makes pass, and its dependencies.
+    - Ownership: frontend, backend and infra tasks never own the same paths (they are built in
+      parallel). A task owns every file it changes, including shared wiring it must edit (e.g. the
+      backend's app module registration, the app's router); dependency manifests are always allowed.
+      Keep tasks small (about a day of work). Components without commands (infra) verify with "-".
+    - A feature that adds something to ANOTHER feature's screen (an "Add to cart" button on the product
+      screen, a badge in a shared header) must own those files: list the exact screens, hooks, shared
+      widgets and their tests in that task's owns, even when an earlier task created them. Otherwise
+      the task cannot be built and is rejected by the ownership check.
+    - Entry points: the files that start a component are listed below. The component's FIRST task (its
+      project setup) owns them, so that after every milestone the app starts and its tests can run end to
+      end; later tasks add their routes or modules by editing those files (they list them in owns too).
+      {entry_points}
+    - Coverage: every must-have acceptance criterion has a task; every API operation is implemented by
+      a backend task; every data model is covered. App tasks that call an operation depend on the
+      backend task that implements it. Project setup and infrastructure (Dockerfile, compose, CI) are
+      tasks too. No cycles.
+  expected_output: Work packages and tasks with owned paths, verify commands, criteria and dependencies.
+
+plan_delivery:
+  agent: project_manager
+  description: |
+    Sequence the Architect's WBS into a delivery plan and estimate every task. You may not add, drop
+    or change tasks; if the WBS looks wrong, say so in risks (scope changes go back to the Architect).
+
+    Spec:
+    {prd}
+
+    WBS (from the Architect):
+    {wbs}
+
+    Scope for this run:
+    {scope_rules}
+
+    Reviewer feedback on the previous plan (address all of it, empty if first draft):
+    {revision_notes}
+
+    Rules:
+    - Milestones M1, M2... in delivery order, each ending in a testable slice; every task in exactly
+      one milestone; a task never waits for a task in a later milestone.
+    - Every milestone must END IN SOMETHING THAT STARTS: when a milestone has tasks of a component, a
+      task of that milestone or an earlier one must own that component's entry-point files:
+      {entry_points}
+    - Estimate every task in points (1-8) with complexity, risk and confidence (low/medium/high) and a
+      one-line rationale naming what drives the size. Be honest about risk: new infrastructure,
+      payments, auth and concurrency are higher risk.
+    - List delivery risks and a short schedule note.
+  expected_output: Milestones over the WBS tasks, an estimate per task, risks and a schedule note.
 
 design_architecture:
   agent: architect
   description: |
-    Design the system for this approved PRD. (The Project manager plans the work from your design
-    afterwards, so make modules, operations and data models explicit.)
+    Design the system for this approved spec. (You break it into the WBS next, so make modules,
+    operations and data models explicit.)
 
-    PRD:
+    Spec:
     {prd}
 
     Target stack: {stack}
     Core domain entities to consider: {domain_entities}
+
+    Repository layout (fixed by the build tooling, which creates these folders and runs the coding
+    agents in them; use exactly these paths and add no other top-level folders such as apps/ or packages/):
+    {layout}
 
     Reviewer feedback on the previous draft (address all of it, empty if first draft):
     {revision_notes}
@@ -135,6 +132,8 @@ design_architecture:
     {scope_rules}
 
     Deliver:
+    0. At least two design options (including the simplest that meets the spec, marked simplest) with
+       pros and cons, and the recommended one (recommended_option); the rest of the design is that option.
     1. Components and their responsibilities.
     2. Backend modules: each with its entities and the endpoints it owns.
     3. Mobile app features: screens and state management per feature.
@@ -142,9 +141,9 @@ design_architecture:
        endpoint the must-have stories need, with request/response schemas,
        bearer auth, pagination and a shared error schema. Every operation has
        an operationId (used to generate the mobile API client).
-    5. A complete Prisma schema (prisma_schema) for PostgreSQL.
+    5. {data_layer}
     6. Security design and at least three ADRs for the key decisions.
-  expected_output: The architecture document, OpenAPI YAML and Prisma schema.
+  expected_output: The architecture document, OpenAPI YAML and (when the stack has a database) Prisma schema.
 
 design_ui:
   agent: ui_ux_designer
@@ -171,6 +170,45 @@ design_ui:
     - Minimum touch target 48dp; text contrast at least WCAG AA.
   expected_output: A design system with screen specs and navigation.
 
+design_mockups:
+  agent: ui_ux_designer
+  description: |
+    Draw mockups of screen {screen_id} of the mobile app, one per state listed below. They are shown to
+    the reviewer at the architecture gate and given to the frontend developer, so make them look like the
+    real screen: realistic sample content (item names, SKUs, prices, quantities, addresses), the real
+    labels and buttons, and the layout a phone user would see.
+
+    Product:
+    {product}
+
+    Screen:
+    {screen}
+
+    User stories this screen serves, with their acceptance criteria (the mockups must follow them, e.g.
+    what may and may not be shown; sample content must fit this product and its customers):
+    {stories}
+
+    States to draw (use exactly these names in "state"):
+    {states}
+
+    Mockup kit (the page around your markup, a phone screen, is provided):
+    {kit}
+
+    Accessibility rules from the design system: {accessibility}
+
+    Reviewer feedback on the previous design (address all of it, empty if first draft):
+    {revision_notes}
+
+    Rules:
+    - For each state, return body markup only: no html, head, body, style, script, link, iframe or img tags.
+    - Style only with the kit classes, the typography classes and inline styles that use var(--token)
+      colors, var(--sp-N) spacing and var(--r-N) radii. No hex, rgb() or hsl() colors and no URLs.
+    - Images are .img boxes; icons are .icon placeholders with a short name.
+    - Loading states use .skeleton bars shaped like the content; error states show the message and the
+      Retry action; empty states explain what to do next.
+    - Keep each state under about 60 lines of markup.
+  expected_output: The screen id and one mockup (state name and body markup) per state listed.
+
 # ---------- build phase (M3). {tooling} is filled in by the worker (Claude Code or CrewAI tools). ----------
 
 implement_work_item:
@@ -193,10 +231,17 @@ implement_work_item:
     {tooling}
 
     Source of truth, in {docs_dir} (read what you need, do not edit):
-    - openapi.yaml: the API contract. Endpoints, request/response shapes and status codes must match it exactly.
-    - architecture.md: modules, data model notes, security design and ADRs.
-    - prd.md: full requirements. design_system.md: screens and design tokens (mobile work).
+    - api-contract.yaml: the API contract. Endpoints, request/response shapes and status codes must match it exactly.
+    - design.md: modules, data model notes, security design; adr-*.md: the decisions.
+    - spec.md: requirements and acceptance criteria (AC-..). wbs.md: your task's owned paths and verify command.
+    - ui-design.md and ui/: screens, design tokens and the approved screen prototypes (mobile work).
     - The project conventions in your instructions.
+
+    Locked acceptance tests (written before the build; you cannot change them, and they define the
+    names they need: the app's root widget and package imports, widget Keys, helper hooks). Read the
+    ones for your component FIRST and build exactly those names so they compile and pass when the
+    milestone is finished. Files:
+    {acceptance_files}
 
     Rules:
     - Implement only this work item, completely. No placeholders or TODOs for the core behaviour.
@@ -228,6 +273,7 @@ fix_work_item:
     {tooling}
 
     The API contract and design documents are in {docs_dir} (read-only).
+    Locked acceptance tests (read-only; they define the names and behaviour to build): {acceptance_files}
     Fix the root cause with the smallest correct change, keep existing tests passing, and make
     sure these checks pass: {checks}.
   expected_output: A report of what you changed and whether the checks pass.
@@ -249,17 +295,108 @@ qa_milestone:
     How to work:
     {tooling}
 
-    Documents in {docs_dir}: openapi.yaml (API contract), architecture.md, prd.md, design_system.md.
+    Documents in {docs_dir}: api-contract.yaml (API contract), design.md, spec.md, ui-design.md, wbs.md, plan.md.
 
     Do this:
     1. For each acceptance criterion above that the built items cover, find the code and the tests
-       that prove it. Add missing tests where you can, and run the test suites if you can.
-    2. Check that implemented endpoints match openapi.yaml (paths, methods, status codes, shapes).
+       that prove it (the locked acceptance tests are the definition of done). You never edit files:
+       a criterion without a passing test is a bug.
+    2. Check that implemented endpoints match api-contract.yaml (paths, methods, status codes, shapes).
     3. Look for security problems: auth checks, input validation, secrets in code.
     Report each real defect as a bug with the work item it belongs to. Severity: blocker (breaks
     the milestone goal or security), major (an acceptance criterion is not met), minor (other).
     Set milestone_id to {milestone_id}. passed is true only when there are no blocker or major bugs.
+    If the cause of a failing locked test is THE TEST ITSELF (it does not compile, a support file misses
+    an import, it contradicts the contract or the UI design), set locked_test_defect to true on that bug:
+    builders may not edit locked tests, so it goes to the Test Writer instead of a developer.
+
+    Locked acceptance tests (written before the build; a failing one means its criterion is not met,
+    report it as a major bug for the task that serves the criterion):
+    {acceptance}
+
+    Integration and scan results (deterministic; report files are listed; do not repeat their bugs, but
+    never say "passed" for anything they show failing):
+    {verification}
   expected_output: A QA report.
+
+review_milestone:
+  agent: code_reviewer
+  description: |
+    Review the code of milestone {milestone} independently. You did not write it and you never edit it.
+
+    What changed (git diff stat) and where to read it: {diff_stat}
+    Read the changed files with your tools. Work items and their owned paths:
+    {items}
+
+    Spec and acceptance criteria this milestone serves:
+    {stories}
+
+    Documents in {docs_dir}: spec.md, design.md, api-contract.yaml, adr-*.md, ui-design.md.
+    QA and scan summary for this milestone: {verification}
+
+    Review through all five lenses and set lenses_covered to the ones you did:
+    - spec: does the code do what the acceptance criteria say, including the edge cases?
+    - security: authorization, input validation, injection, secrets, unsafe defaults, data exposure.
+    - design: does it follow the design, the ADRs and the API contract exactly (no drift)?
+    - quality: correctness, error handling, duplication, tests that prove little.
+    - operability: configuration, logging without personal data, failure behaviour, migrations.
+    For each finding give the work item, file and line, severity (blocker: unsafe or wrong in a way
+    that must not merge; major: a criterion or the design is not met; minor: worth fixing later),
+    your confidence (low/medium/high), what is wrong and what would fix it. Only blocker/major
+    findings you are at least moderately sure of send work back to the builders: do not pad the list.
+    {revision_notes}
+  expected_output: A review report with findings per lens.
+
+write_acceptance_tests:
+  agent: test_writer
+  description: |
+    Write the acceptance tests for milestone {milestone}, component {component}.
+    {mode}
+
+    Acceptance criteria to prove (one or more tests each; put the criterion id in the test name):
+    {criteria}
+
+    {facts}
+
+    How to work:
+    {tooling}
+
+    Read the API contract ({docs_dir}/api-contract.yaml), the spec ({docs_dir}/spec.md) and, for app
+    tests, the UI design ({docs_dir}/ui-design.md: screens, states and test keys).
+
+    Rules:
+    - Write the tests only in {folder}/ (one file per criterion is fine). {runner_note}
+    - Test behaviour through the public surface: HTTP calls against the app module for the backend
+      (the SuiteCommerce or other external services faked at their HTTP boundary), widgets found by
+      Key for the app. Use the contract's exact paths, fields and status codes.
+    - Never write application code, stubs or fakes of the code under test. (See the mode above for whether
+      the run of `{command}` must fail now or pass now.)
+    - The builders cannot change these tests, and they read them first. So put everything the tests
+      need from the app in ONE file, {folder}/support/contract.md (or contract.dart / contract.ts for
+      constants): the root widget or module and where it is imported from, the package name, every
+      widget Key or selector, the environment variables, the HTTP base-URL hook, and any provider
+      override. Prefer names the UI design (ui-design.md) already uses.
+    - If a criterion cannot be tested as written, set blocked and say why instead of guessing.
+  expected_output: The tests written, each with its criterion id, file and test name.
+
+repair_acceptance_tests:
+  agent: test_writer
+  description: |
+    QA found that locked acceptance tests of component {component} are themselves defective. The builders may not
+    edit them; you may, once, to repair exactly what is wrong (a missing import, a wrong name, a helper that does not
+    compile) without weakening what a test proves.
+
+    Defects reported:
+    {bugs}
+
+    {facts}
+
+    The tests are in {folder}/ and run with `{command}`. Rules:
+    - Change only files in {folder}/, and only what the defects require. Every criterion keeps its test and the same
+      checks; never delete or loosen an assertion.
+    - After your change the suite must COMPILE and load (it may still fail for features that are not built yet).
+    - Report what you changed and why.
+  expected_output: What you repaired in the locked tests and why.
 
 # ---------- release phase (M4) ----------
 
@@ -281,20 +418,20 @@ deploy_staging:
 
     The build phase may already have created some of these as an infra work item: check what
     exists first, keep what works, and only fix or add what is missing or wrong. Make sure of:
-    1. {api_dir}/Dockerfile: a small multi-stage production image for the API. It must run database
-       migrations on start (before the server) and listen on the PORT environment variable.
+    1. {api_dir}/Dockerfile: a small multi-stage production image for the API. {start_rule}
        Use the same runtime major version as the build toolchain ({toolchain_image}), e.g. its
        -slim variant: the lockfile was produced with that toolchain.
-    2. {compose_file}: the API plus PostgreSQL 16 for staging. Publish the API on host port
+    2. {compose_file}: the API{compose_services} for staging. Publish the API on host port
        $STAGING_PORT (default {port}); build the API from {api_dir}; read settings from {env_file}.
     3. {env_file}: every environment variable the API needs, with SAFE TEST VALUES ONLY (no real
-       keys: use placeholders such as sk_test_placeholder). DATABASE_URL must point at the compose
-       database. Add a comment at the top saying these are test values.
+       keys: use placeholders such as sk_test_placeholder).{env_rule} Add a comment at the top
+       saying these are test values.
     4. .github/workflows/ci.yml: install, lint, build and test the API on every push and pull request.
     5. infra/README.md: how to run staging, and which variables production needs.
     Also make sure the API serves GET {health_path} (200 when up) and its OpenAPI document as JSON
     at {openapi_json_path} (for example with @nestjs/swagger); add them if missing, with tests.
     Never write real secrets anywhere.
+    {staging_notes}
   expected_output: A report of the files you created and anything a human must provide.
 
 write_smoke_tests:
@@ -304,6 +441,10 @@ write_smoke_tests:
 
     Built so far (test only these):
     {built}
+
+    {previous_failures}
+
+    {facts}
 
     How to work:
     {tooling}
@@ -316,7 +457,7 @@ write_smoke_tests:
     - Use plain HTTP requests against SMOKE_BASE_URL; do not import application code.
     - Cover only journeys the built items support, end to end (e.g. health, sign up, sign in,
       browse, add to cart), with unique test data per run (e.g. a timestamped email).
-    - The API contract is {docs_dir}/openapi.yaml; request/response shapes must follow it.
+    - The API contract is {docs_dir}/api-contract.yaml; request/response shapes must follow it.
     - Keep it short and reliable: a handful of journeys, clear failure messages.
   expected_output: A report of the smoke suite you wrote.
 
@@ -328,7 +469,7 @@ integration_review:
     Built so far:
     {built}
 
-    Contract check (API served vs {docs_dir}/openapi.yaml, built scope only):
+    Contract check (API served vs {docs_dir}/api-contract.yaml, built scope only):
     {contract_issues}
 
     Recent staging logs:
@@ -338,7 +479,7 @@ integration_review:
     {tooling}
 
     Check: configuration and environment variables ({env_file}, config validation), the API prefix,
-    database migrations, CORS/security headers, error format, and that implemented endpoints match
+    {data_check}CORS/security headers, error format, and that implemented endpoints match
     the contract (see the contract check). Fix small glue problems yourself (configuration, wiring,
     missing registration of a module) and say so in criteria_checked. Report anything else as a
     bug with the work item it belongs to (use RELEASE if unclear). Severity: blocker if the system
@@ -355,6 +496,10 @@ write_device_tests:
     Built so far (test only these):
     {built}
 
+    {previous_failures}
+
+    {facts}
+
     How to work:
     {tooling}
 
@@ -368,45 +513,18 @@ write_device_tests:
       the built items support.
     - Wait for network data with pumpAndSettle or explicit waits with timeouts; keep each test
       independent of the others and of existing cart state.
-    - A handful of reliable journeys beats many fragile ones. Clear failure messages.
+    - A handful of reliable journeys beats many fragile ones: AT MOST 8 testWidgets, one per
+      critical user journey (the pipeline rejects more).
+    - Find widgets by the app's own Keys (find.byKey), never by guessed type or text such as
+      find.byType(ElevatedButton). Read the app code under {app_dir}/lib and docs/ui-design.md
+      for the keys; if a key you need does not exist, test only what has keys.
+    - NEVER hard-code data ids, names or counts (a product id such as 'p-mug' does not exist: the staging
+      seed uses its own ids). Find a list item by its key PREFIX, e.g.
+      find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith('product-tile-')).first,
+      or read ids from the running API at the start of the test ({device_api_base}/products, with dart:io HttpClient).
     - Do not change application behaviour. If the app cannot reach {device_api_base} from the
       device (e.g. cleartext HTTP blocked), leave the test as is: that failure goes to the
       frontend developer.
   expected_output: A report of the on-device tests you wrote.
 
-# ---------- estimation review (bottom-up) ----------
 
-review_estimates:
-  agent: backend_developer   # run as each component's developer (see profile components)
-  description: |
-    You will build the work items below. The Project manager drafted them with estimates; give
-    your own estimate for each, as the person who will do the work.
-
-    Your work items:
-    {items}
-
-    The solution they are part of:
-    {solution}
-
-    Stack: {stack}
-
-    For every item: points (1-8, same scale as the PM: 1 = trivial, 3 = a solid half-day of
-    focused work including tests, 8 = the largest item worth keeping together), complexity, risk
-    and confidence (low/medium/high), and a one-line rationale naming what drives the effort.
-    Include writing tests and getting the build green. Use `concerns` for anything the plan misses
-    or underestimates (hidden work, missing dependency, unclear requirement). Estimate honestly:
-    do not simply copy the PM's number, and do not pad.
-  expected_output: One estimate per work item.
-
-reconcile_estimates:
-  agent: project_manager
-  description: |
-    The developers re-estimated your work breakdown. For these items the two estimates are far
-    apart:
-
-    {disagreements}
-
-    Decide the final estimate for each, between the two numbers, and say why in one line. Weigh
-    the builder's concrete reasons (hidden work, concerns) against your view of scope. Where the
-    builder names work the plan misses, lean towards their number.
-  expected_output: One decision per disputed item.

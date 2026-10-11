@@ -7,6 +7,10 @@ from openapi_spec_validator import validate
 from pydantic import BaseModel, Field
 
 
+# The approved API contract (copied into the components by the scaffold, checked against the running API).
+CONTRACT_PATH = "docs/api-contract.yaml"
+
+
 class Component(BaseModel):
     name: str
     responsibility: str
@@ -34,7 +38,18 @@ class ADR(BaseModel):
     consequences: str
 
 
+class DesignOption(BaseModel):
+    name: str
+    summary: str
+    pros: list[str]
+    cons: list[str]
+    simplest: bool = Field(default=False, description="True for the simplest option that meets the spec")
+
+
 class ArchitectureDoc(BaseModel):
+    options: list[DesignOption] = Field(default_factory=list,
+                                        description="At least two design options, including the simplest")
+    recommended_option: str = Field(default="", description="Name of the recommended option, and the design below")
     overview: str
     components: list[Component]
     backend_modules: list[BackendModule]
@@ -43,7 +58,7 @@ class ArchitectureDoc(BaseModel):
     security: list[str]
     adrs: list[ADR]
     openapi_yaml: str = Field(description="Complete OpenAPI 3.1 document as YAML")
-    prisma_schema: str = Field(description="Complete Prisma schema for PostgreSQL")
+    prisma_schema: str = Field(description="Complete Prisma schema for PostgreSQL; empty when the stack has no database")
 
     def openapi_errors(self) -> list[str]:
         """Parse and validate the OpenAPI document; also require operationIds."""
@@ -75,6 +90,12 @@ class ArchitectureDoc(BaseModel):
             errors.append("Prisma schema defines no models")
         return errors
 
+    def no_database_errors(self) -> list[str]:
+        """For stacks without a database: the API keeps no data of its own."""
+        if self.prisma_schema.strip():
+            return ["This stack has no database: leave prisma_schema empty (the API keeps no data of its own)"]
+        return []
+
     def operations(self) -> dict[str, str]:
         """operationId -> 'METHOD /path' from the OpenAPI document (empty if it does not parse)."""
         try:
@@ -98,7 +119,7 @@ class ArchitectureDoc(BaseModel):
         lines += [f"- {m.name}: {m.responsibility} (entities: {', '.join(m.entities) or '-'})" for m in self.backend_modules]
         lines += ["", "API operations (operationId: method path):"]
         lines += [f"- {op}: {route}" for op, route in self.operations().items()]
-        lines += ["", "Data models: " + ", ".join(self.data_models())]
+        lines += ["", "Data models: " + (", ".join(self.data_models()) or "(none: no database)")]
         lines += ["", "App features:", self.app_features_summary()]
         return "\n".join(lines)
 
@@ -109,7 +130,16 @@ class ArchitectureDoc(BaseModel):
         )
 
     def to_markdown(self) -> str:
-        lines = ["# Architecture", "", self.overview, "", "## Components"]
+        lines = ["# Design", ""]
+        if self.options:
+            lines += ["## Options considered", ""]
+            for o in self.options:
+                tag = " (simplest)" if o.simplest else ""
+                mark = " **recommended**" if o.name == self.recommended_option else ""
+                lines += [f"### {o.name}{tag}{mark}", o.summary, "", "Pros:"] + [f"- {p}" for p in o.pros] \
+                    + ["", "Cons:"] + [f"- {c}" for c in o.cons] + [""]
+            lines += [f"Recommendation: **{self.recommended_option}**", ""]
+        lines += ["## Architecture", "", self.overview, "", "## Components"]
         lines += [f"- **{c.name}** ({c.technology}): {c.responsibility}" for c in self.components]
         lines += ["", "## Backend modules"]
         for m in self.backend_modules:
@@ -130,5 +160,8 @@ class ArchitectureDoc(BaseModel):
                 f"**Consequences:** {a.consequences}",
                 "",
             ]
-        lines.append("The API contract is in `openapi.yaml`; the data model is in `schema.prisma`.")
+        if self.prisma_schema.strip():
+            lines.append("The API contract is in `openapi.yaml`; the data model is in `schema.prisma`.")
+        else:
+            lines.append("The API contract is in `openapi.yaml`; the API has no database of its own.")
         return "\n".join(lines)

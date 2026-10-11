@@ -1,0 +1,63 @@
+{
+  "_comment": "Made-up demo customer for the mock. The field names and shapes follow the real Account.Login.Service.ss response.",
+  "users": [
+    {
+      "email": "buyer@example.com",
+      "password": "demo-password-1",
+      "user": {
+        "isLoggedIn": "T",
+        "isGuest": "F",
+        "internalid": "1001",
+        "email": "buyer@example.com",
+        "firstname": "Dana",
+        "lastname": "Buyer",
+        "companyname": "Demo Lighting Supply Ltd",
+        "isperson": false,
+        "subsidiary": "1",
+        "priceLevel": "5",
+        "currency": {"internalid": "1", "symbol": "$", "currencyname": "CAD", "code": "CAD", "precision": 2},
+        "paymentterms": {"internalid": "2", "name": "Net 30"},
+        "custentity_f3_role": "5",
+        "custentity_f3_disallow_cart": false,
+        "addressbook": [
+          {"internalid": "501", "addressee": "Demo Lighting Supply Ltd", "attention": "Receiving", "addr1": "100 Example Street",
+           "addr2": "", "addr3": "", "city": "Toronto", "state": "ON", "zip": "M5V 0A1", "country": "CA", "phone": "416-555-0100",
+           "defaultshipping": "T", "defaultbilling": "F", "isresidential": "F", "isvalid": "T"},
+          {"internalid": "502", "addressee": "Demo Lighting Supply Ltd", "attention": "Accounts Payable", "addr1": "200 Sample Avenue",
+           "addr2": "Suite 4", "addr3": "", "city": "Montreal", "state": "QC", "zip": "H2Y 1C6", "country": "CA", "phone": "514-555-0100",
+           "defaultshipping": "F", "defaultbilling": "T", "isresidential": "F", "isvalid": "T"}
+        ]
+      }
+    },
+    {
+      "email": "noterms@example.com",
+      "password": "demo-password-2",
+      "user": {
+        "isLoggedIn": "T",
+        "isGuest": "F",
+        "internalid": "1002",
+        "email": "noterms@example.com",
+        "firstname": "Sam",
+        "lastname": "Noterms",
+        "companyname": "Demo Cash Customer Inc",
+        "isperson": false,
+        "subsidiary": "1",
+        "priceLevel": "5",
+        "currency": {"internalid": "1", "symbol": "$", "currencyname": "CAD", "code": "CAD", "precision": 2},
+        "paymentterms": null,
+        "custentity_f3_role": "5",
+        "custentity_f3_disallow_cart": false,
+        "addressbook": [
+          {"internalid": "601", "addressee": "Demo Cash Customer Inc", "attention": "", "addr1": "300 Placeholder Road",
+           "addr2": "", "addr3": "", "city": "Calgary", "state": "AB", "zip": "T2P 1J9", "country": "CA", "phone": "403-555-0100",
+           "defaultshipping": "T", "defaultbilling": "T", "isresidential": "F", "isvalid": "T"}
+        ]
+      }
+    }
+  ],
+  "shipmethods": [
+    {"internalid": "3", "name": "Ground (3-5 business days)", "rate": 25, "rate_formatted": "$25.00"},
+    {"internalid": "4", "name": "Express (1-2 business days)", "rate": 60, "rate_formatted": "$60.00"}
+  ],
+  "taxRate": 0.13
+}

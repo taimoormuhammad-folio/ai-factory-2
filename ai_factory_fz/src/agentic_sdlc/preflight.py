@@ -41,7 +41,7 @@ def check(pipeline: dict[str, Any], profile: Profile, sandbox: SandboxRunner, mo
         else:
             problems += [f"Toolchain '{rt}': {reason}" for rt in runtimes
                          if (reason := sandbox.unavailable_reason(rt))]
-            if release and not os.environ.get("SDLC_STAGING_DATABASE_URL"):
+            if release and profile.database and not os.environ.get("SDLC_STAGING_DATABASE_URL"):
                 problems.append("Local staging needs SDLC_STAGING_DATABASE_URL in .env (an empty PostgreSQL "
                                 "database), or use build.sandbox: docker")
 

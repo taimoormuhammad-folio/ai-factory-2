@@ -1,0 +1,313 @@
+# App-type profile: Flutter B2B store app for a NetSuite SuiteCommerce site, through a stateless NestJS
+# backend-for-frontend. NetSuite owns all data: the API has no database.
+
+name: flutter_nestjs_netsuite
+description: Flutter B2B mobile store on NetSuite SuiteCommerce, via a stateless NestJS backend (no database).
+
+stack:
+  mobile: Flutter 3.x (Dart), Riverpod, go_router, dio, freezed/json_serializable, API client generated from OpenAPI (dart-dio), flutter_secure_storage, flutter_native_splash
+  backend: NestJS (TypeScript) backend-for-frontend, stateless with encrypted session tokens, no database, @nestjs/config, @nestjs/swagger
+  integration: NetSuite SuiteCommerce Advanced (shopping, cart and checkout services over HTTPS); NetSuite is the source of truth
+  payments: NetSuite account payment terms (invoice) with an optional purchase order number; no card payments
+  testing: flutter_test + integration_test; Jest + Supertest + nock; a SuiteCommerce mock for staging
+  delivery: Docker, docker-compose (staging), GitHub Actions; Android first
+
+# The API keeps no data: no Prisma schema, no data-model guardrails (C1-C3), staging without PostgreSQL.
+database: false
+
+# NetSuite records the API works with (module entities name these).
+domain_entities:
+  [
+    Customer,
+    Contact,
+    Address,
+    Item,
+    ItemPrice,
+    Cart,
+    CartLine,
+    ShippingMethod,
+    PaymentTerms,
+    SalesOrder,
+  ]
+
+agent_context:
+  business_analyst: [knowledge/b2b_domain.md]
+  project_manager:
+    - knowledge/b2b_domain.md
+    - knowledge/repo_layout.md
+    - knowledge/release_scope.md
+  architect:
+    - knowledge/b2b_domain.md
+    - knowledge/suitecommerce_api.md
+    - knowledge/suitecommerce_checkout.md
+    - knowledge/bff_conventions.md
+    - knowledge/flutter_conventions.md
+    - knowledge/repo_layout.md
+    - knowledge/release_scope.md
+    - knowledge/api_error_contract.md
+  ui_ux_designer: [knowledge/b2b_domain.md, knowledge/flutter_conventions.md]
+  backend_developer:
+    - knowledge/suitecommerce_api.md
+    - knowledge/suitecommerce_checkout.md
+    - knowledge/bff_conventions.md
+    - knowledge/staging_testing.md
+    - knowledge/staging_test_conventions.md
+    - knowledge/api_error_contract.md
+  frontend_developer:
+    - knowledge/b2b_domain.md
+    - knowledge/flutter_conventions.md
+    - knowledge/flutter_device_ready.md
+    - knowledge/staging_testing.md
+    - knowledge/staging_test_conventions.md
+    - knowledge/api_error_contract.md
+  qa_engineer:
+    - knowledge/b2b_domain.md
+    - knowledge/bff_conventions.md
+    - knowledge/flutter_conventions.md
+    - knowledge/api_error_contract.md
+  deployment_engineer:
+    - knowledge/staging_testing.md
+    - knowledge/staging_test_conventions.md
+    - knowledge/repo_layout.md
+    - knowledge/release_scope.md
+  integration_pass:
+    - knowledge/suitecommerce_api.md
+    - knowledge/suitecommerce_checkout.md
+    - knowledge/staging_testing.md
+    - knowledge/api_error_contract.md
+  smoke_tester:
+    - knowledge/staging_testing.md
+    - knowledge/staging_test_conventions.md
+    - knowledge/flutter_device_ready.md
+
+agent_overrides: {}
+
+# What gets built, by which agent, where, and how it is verified.
+# checks run after every work item; an item is only done when they pass.
+components:
+  backend:
+    agent: backend_developer
+    workdir: server
+    runtime: node
+    checks: [npm run build, npm test]
+    # Verification scans, run per milestone by QA + Verify; raw output is saved under reports/.
+    scans:
+      - {name: lint, command: npm run lint, severity: major}
+      - {name: dependency audit, command: npm audit --audit-level=high, severity: minor, network: true}   # reported at G5
+    # Locked acceptance tests (Test Writer, before the build); run at each milestone.
+    acceptance:
+      dir: server/test/acceptance
+      command: npm run test:acceptance
+      note: Add an npm script "test:acceptance" to server/package.json that runs only this folder with the project's test runner.
+    scaffold:
+      # Keep the @nestjs/* majors in step with the CLI major.
+      - run: npx -y @nestjs/cli@12 new server --package-manager npm --skip-git --strict
+        creates: server/package.json
+      # Pin majors: an unpinned install follows npm "latest", which can be a pre-release.
+      - workdir: server
+        run: npm install @nestjs/config@^12 @nestjs/swagger@^12 class-validator class-transformer
+      - workdir: server
+        run: npm install --save-dev nock@^14
+      - copy_from: docs/api-contract.yaml
+        copy_to: server/openapi.yaml
+      # Stand-in for the SuiteCommerce site, used by staging, smoke and device tests (never production).
+      - template: suitecommerce-mock
+        copy_to: infra/suitecommerce-mock
+        creates: infra/suitecommerce-mock/server.js
+  frontend:
+    agent: frontend_developer
+    workdir: app
+    runtime: flutter
+    # Analyze only the app's own code: the locked acceptance tests (acceptance_test/) import code that later tasks write.
+    checks: [flutter analyze lib test, flutter test]
+    acceptance:
+      # Outside test/: the task checks (`flutter test`) must not run these locked tests, which fail until the
+      # milestone's screens exist. They run at the end of the milestone, before QA. Not named integration_test:
+      # Flutter runs that folder on a device, and there is none.
+      dir: app/acceptance_test
+      command: flutter test acceptance_test
+      note: >
+        Widget tests (flutter_test, testWidgets) found by Key, run on the Dart VM; no device is needed. Put shared
+        helpers in a support/ folder next to the tests. Keep this folder out of test/ so the normal checks do not
+        run it, and do not move it under integration_test/ (that needs a device).
+    scaffold:
+      # Change the organisation (Android application id / iOS bundle id) before a store release.
+      - run: flutter create --org com.example --project-name b2b_store_app --platforms android,ios app
+        creates: app/pubspec.yaml
+      - copy_from: docs/api-contract.yaml
+        copy_to: app/openapi.yaml
+      - runtime: openapi
+        run: generate -i docs/api-contract.yaml -g dart-dio -o app/packages/api_client --additional-properties=pubName=api_client
+        creates: app/packages/api_client/pubspec.yaml
+      - workdir: app
+        run: flutter pub get
+      # The generated client uses built_value: its *.g.dart files must exist before anything compiles. Developers
+      # without a shell (the Claude Code path) cannot run build_runner themselves.
+      - workdir: app/packages/api_client
+        run: flutter pub get
+        creates: app/packages/api_client/pubspec.lock
+      - workdir: app/packages/api_client
+        run: dart run build_runner build --delete-conflicting-outputs
+        creates: app/packages/api_client/lib/**/*.g.dart
+  infra:
+    agent: deployment_engineer
+    workdir: .
+    runtime: null
+    checks: []
+  shared:
+    agent: backend_developer
+    workdir: .
+    runtime: null
+    checks: []
+
+# What the Architect's output is checked against (see src/agentic_sdlc/guardrails/architecture.py).
+guardrails:
+  required_stack: [flutter, nestjs, suitecommerce] # must appear in the components
+  forbidden_stack:
+    [
+      react,
+      react native,
+      angular,
+      vue,
+      next.js,
+      express,
+      django,
+      rails,
+      laravel,
+      spring,
+      mongodb,
+      mysql,
+      postgresql,
+      postgres,
+      prisma,
+      typeorm,
+      sqlite,
+      redis,
+      firestore,
+      firebase auth,
+      cloud functions,
+      supabase,
+      graphql,
+      kotlin,
+      swift,
+      xamarin,
+      ionic,
+      stripe,
+    ]
+  platform: flutter mobile (Android and iOS)
+  platform_technology: flutter
+  # "website" alone is not forbidden here: the SuiteCommerce website is the system we integrate with, not a platform we build.
+  forbidden_platforms: [web app, web client, website client, web storefront, responsive website, desktop, electron, pwa]
+  min_adrs: 3
+  security_topics:
+    authentication: [auth, token, session, credential]
+    input validation: [validat, sanitiz]
+    secrets and configuration: [secret, environment variable, env var, config]
+    session encryption: [encrypt]
+  # Agent guardrails (DV3: copies of the approved contract must not drift)
+  # Files that start each component; its first task owns them so every milestone ends in something that runs.
+  entry_points:
+    backend: [server/src/main.ts, server/src/app.module.ts]
+    frontend: [app/lib/main.dart]
+  # Test data the facts file lists for the test writers: the staging mock's fixtures (this profile has no database).
+  facts:
+    fixtures: [infra/suitecommerce-mock/fixtures/*.json]
+    seeds: []
+  contract_copies:
+    docs/api-contract.yaml: [server/openapi.yaml, app/openapi.yaml]
+  scope_also_allowed: [] # extra paths any coding item may change (e.g. [.github/])
+  secret_scan_ignore: [] # paths skipped by the secret scan
+
+# Release phase: how staging runs and is checked.
+release:
+  api_component: backend
+  api_prefix: /api/v1
+  health_path: /api/v1/health
+  openapi_json_path: /api/docs-json # @nestjs/swagger JSON (the Deployment engineer ensures it is served)
+  compose_file: infra/docker-compose.staging.yml
+  env_file: infra/staging.env
+  local_prepare: [npm run build]
+  local_start: node dist/main.js
+  smoke_command: npm run test:smoke
+  package_commands: [npm ci, npm run build]
+  # Shown to the approver at G7 (docs/release.md). Generic on purpose: the pipeline does not know your infrastructure.
+  # The built API against the real SB2 site, read-only (order submission is forced off). Needs infra/sandbox.env, git-ignored.
+  sandbox_check:
+    checks:
+      - {path: /api/v1/health, expect: 200}
+      - {path: /api/docs-json, expect: 200}
+  rollback_steps:
+    - "API: redeploy the previous release tag (see reports/release_notes.md of that run) with the same production command."
+    - "App: keep the previous signed build available and stop the staged rollout of this one."
+    - "This profile has no database of its own: nothing to restore. Check the SuiteCommerce side is unchanged."
+  staging_notes: |
+    This API fronts NetSuite SuiteCommerce. On staging it must use the SuiteCommerce mock in
+    infra/suitecommerce-mock (it has its own Dockerfile): add it to the compose file as service
+    suitecommerce-mock (internal port 8080, not published), make the API depend on it being healthy,
+    and set SUITECOMMERCE_BASE_URL=http://suitecommerce-mock:8080 and CHECKOUT_SUBMIT_ENABLED=true in the
+    staging env file, plus test values for the other SuiteCommerce settings and a test-only
+    SESSION_ENCRYPTION_KEY. Never point staging at the real site. infra/README.md must list the
+    production settings, taking the site values from the brief's "Site settings" section (never invent them):
+    SUITECOMMERCE_BASE_URL, SUITECOMMERCE_APP_PATH, SUITECOMMERCE_COMPANY_ID, SUITECOMMERCE_SITE_ID and, when the brief
+    gives one, SUITECOMMERCE_CATALOG_FILTER; a generated SESSION_ENCRYPTION_KEY (never committed), and
+    CHECKOUT_SUBMIT_ENABLED=false until a human has verified order submission against the site. The staging env file
+    also sets SUITECOMMERCE_APP_PATH (the mock accepts any app path). The server reads SUITECOMMERCE_APP_PATH
+    (default "store") and builds every service URL from it.
+
+# Running the app on an Android emulator (release phase device tests, and `uv run showcase`).
+device:
+  app_component: frontend
+  app_id: com.example.b2b_store_app # from flutter create --org com.example --project-name b2b_store_app
+  system_image: system-images;android-35;google_apis;x86_64
+  avd_name: sdlc_phone
+  device_profile: pixel_7
+  build_command: flutter build apk --debug --dart-define=API_BASE_URL={api_base}
+  apk_path: build/app/outputs/flutter-apk/app-debug.apk
+  test_command: flutter test integration_test -d {serial} --dart-define=API_BASE_URL={api_base}
+
+# Toolchains. docker mode uses `image`; local mode needs `local_binary` on PATH.
+sandbox:
+  runtimes:
+    node:
+      # Node 24 ships npm 11; npm 10 (Node 22) crashes resolving the NestJS 12 dependency tree.
+      image: node:24-bookworm
+      local_binary: npm
+    flutter:
+      image: ghcr.io/cirruslabs/flutter:stable
+      local_binary: flutter
+      run_as_root: true # the SDK writes to its root-owned cache
+      # Kept between rounds AND runs: the Android SDK parts Gradle downloads (NDK, platform, ~1 GB: 15 to 30 minutes
+      # at a slow connection, every release round before) and the Gradle cache.
+      volumes:
+        - sdlc-android-sdk:/opt/android-sdk-linux
+        - sdlc-gradle:/cache/gradle
+      env:
+        PUB_CACHE: /workspace/.pub-cache # keep downloaded packages between commands
+        GRADLE_USER_HOME: /cache/gradle # shared Gradle cache (the volume above)
+        ANDROID_USER_HOME: /workspace/.android # one debug signing key per run (reinstalls keep working)
+    openapi:
+      image: openapitools/openapi-generator-cli:v7.10.0
+      local_binary: java
+      local_prefix: npx -y @openapitools/openapi-generator-cli
+  # Non-secret environment for every command.
+  env:
+    CI: "true" # non-interactive test runners
+  # Commands agents may run (prefix match, one command at a time, no shell operators).
+  allowed_commands:
+    flutter:
+      - flutter pub get
+      - flutter pub add
+      - flutter analyze
+      - flutter test
+      - dart run build_runner build
+      - dart run flutter_native_splash:create
+      - dart format
+    node:
+      - npm install
+      - npm ci
+      - npm run build
+      - npm run lint
+      - npm test
+      - npm run test
+      - npm run test:acceptance
+      - npx tsc --noEmit

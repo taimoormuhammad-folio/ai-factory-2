@@ -29,6 +29,11 @@ def new_run_id(product_hint: str = "") -> str:
     return f"{stamp}-{slug}" if slug else stamp
 
 
+def _stamp_free(text: str) -> str:
+    """The document without the `written_at:` line of its header."""
+    return "\n".join(ln for ln in text.splitlines() if not ln.startswith("written_at:"))
+
+
 class Workspace:
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -64,18 +69,37 @@ class Workspace:
     def write_text(self, rel_path: str, content: str) -> Path:
         p = self.resolve(rel_path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        if p.is_file() and content.startswith("---\n") and _stamp_free(p.read_text(encoding="utf-8", errors="replace")) == _stamp_free(content):
+            return p          # only the written_at stamp differs: keep the file, so gate approvals (file hashes) still hold
         p.write_text(content, encoding="utf-8")
         return p
 
     def read_text(self, rel_path: str) -> str:
         return self.resolve(rel_path).read_text(encoding="utf-8")
 
-    def save_artifact(self, name: str, artifact: BaseModel) -> None:
-        """Save an artifact as JSON (for machines) and Markdown (for people) under docs/."""
+    def doc_header(self, agent: str, inputs: list[str], status: str = "draft") -> str:
+        """Standard header for a step's output: who wrote it, from which inputs (with sha256), its status."""
+        import hashlib
+        from datetime import datetime, timezone
+
+        lines = ["---", f"agent: {agent}", f"status: {status}",
+                 f"written_at: {datetime.now(timezone.utc).isoformat(timespec='seconds')}", "inputs:"]
+        for rel in inputs:
+            p = self.root / rel
+            digest = hashlib.sha256(p.read_bytes()).hexdigest()[:16] if p.is_file() else "missing"
+            lines.append(f"  - {rel} (sha256 {digest})")
+        if not inputs:
+            lines[-1] = "inputs: []"
+        return "\n".join(lines + ["---", ""])
+
+    def save_artifact(self, name: str, artifact: BaseModel, agent: str = "", inputs: list[str] | None = None) -> None:
+        """Save an artifact as JSON (for machines) and Markdown (for people) under docs/.
+        With `agent`, the Markdown starts with the standard header (agent, inputs + hashes, status)."""
         self.write_text(f"docs/{name}.json", artifact.model_dump_json(indent=2))
         to_md = getattr(artifact, "to_markdown", None)
         if to_md:
-            self.write_text(f"docs/{name}.md", to_md())
+            header = self.doc_header(agent, inputs or []) if agent else ""
+            self.write_text(f"docs/{name}.md", header + to_md())
 
     def save_state(self, state: BaseModel) -> None:
         tmp = self.root / f"{STATE_FILE}.tmp"
@@ -85,8 +109,12 @@ class Workspace:
     def load_state_json(self) -> str:
         return (self.root / STATE_FILE).read_text(encoding="utf-8")
 
-    def commit(self, message: str) -> str | None:
-        """Commit everything in the workspace. Returns the commit sha, or None if nothing changed."""
+    # Pipeline bookkeeping a checkpoint may commit while builders are still working on code (parallel build).
+    BOOKKEEPING = ("state.json", "status.md", "blocked.md", "tests.lock", "reports", "docs", "gates")
+
+    def commit(self, message: str, paths: list[str] | tuple[str, ...] | None = None) -> str | None:
+        """Commit everything in the workspace, or only `paths` (files or folders). Returns the commit sha,
+        or None if nothing changed."""
         import os
 
         # Avoid interactive prompts / credential helpers hanging headless worker runs.
@@ -102,7 +130,16 @@ class Workspace:
                     lock.unlink()
                 except OSError:
                     pass
-            repo.git.add(A=True)
+            if paths is None:
+                repo.git.add(A=True)
+            else:
+                wanted = [p for p in dict.fromkeys(paths) if p]
+                ignored = set(repo.ignored(*wanted)) if wanted else set()      # git refuses to add ignored paths
+                existing = [p for p in wanted if (self.root / p).exists() and p not in ignored]
+                tracked_gone = [p for p in wanted if not (self.root / p).exists()
+                                and repo.head.is_valid() and repo.git.ls_files("--", p)]
+                if existing or tracked_gone:
+                    repo.git.add("-A", "--", *existing, *tracked_gone)
             if repo.head.is_valid() and not repo.index.diff("HEAD"):
                 return None
             return repo.index.commit(message, author=_AUTHOR, committer=_AUTHOR).hexsha

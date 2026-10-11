@@ -3,8 +3,8 @@ from agentic_sdlc.crews.base import fill_template
 from agentic_sdlc.crews.discovery import prd_errors
 
 
-def test_markdown_renders_for_every_artifact(product_brief, prd, backlog, architecture, design_system):
-    for artifact in (product_brief, prd, backlog, architecture, design_system):
+def test_markdown_renders_for_every_artifact(prd, backlog, architecture, design_system):
+    for artifact in (prd, backlog, architecture, design_system):
         assert artifact.to_markdown().startswith("# ")
 
 
@@ -44,6 +44,13 @@ def test_prd_checks(prd):
     errors = prd_errors(prd)
     assert "unique" in errors[0]
     assert any("two acceptance criteria" in e for e in errors)
+
+
+def test_spec_needs_unique_acceptance_criterion_ids(prd):
+    prd.user_stories[1].acceptance_criteria[0].id = "AC-01"      # duplicate of US-001's
+    prd.user_stories[1].acceptance_criteria[1].id = ""
+    errors = " ".join(prd_errors(prd))
+    assert "unique across the spec: AC-01" in errors and "needs an id AC-01" in errors
 
 
 def test_design_coverage(design_system):
@@ -88,3 +95,11 @@ def test_old_backlogs_without_links_still_load():
     w = WorkItem.model_validate({"id": "WI-001", "title": "t", "description": "d", "epic_id": "E-01",
                                  "component": "backend", "story_ids": [], "estimate_points": 2})
     assert w.api_operations == [] and w.risk == "medium"
+
+
+def test_backlog_rejects_dependencies_on_later_milestones(backlog):
+    from agentic_sdlc.artifacts.backlog import Milestone
+    backlog.milestones = [Milestone(id="M1", name="a", goal="g", work_item_ids=["WI-002"]),
+                          Milestone(id="M2", name="b", goal="g", work_item_ids=["WI-001"])]
+    errors = backlog.validation_errors()
+    assert "WI-002 (in M1) depends on WI-001, which is in a later milestone (M2); move WI-001 earlier or WI-002 later" in errors

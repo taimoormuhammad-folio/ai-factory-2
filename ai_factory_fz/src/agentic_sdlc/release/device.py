@@ -29,6 +29,66 @@ DOWNLOAD_BASE = "https://dl.google.com/android/repository/"
 FALLBACK_CMDLINE_TOOLS = "commandlinetools-linux-16111833_latest.zip"
 
 
+# The test driver could not attach to the app: an emulator/harness problem, not a failing journey. (When the app
+# itself is broken the driver attaches and a test fails with its own message.)
+HARNESS_FAILURES = ("Unable to start the app on the device", "Error waiting for a debug connection",
+                    "Dart VM Service was not discovered", "Timed out waiting for the Dart VM Service")
+
+
+def harness_failure(output: str) -> str | None:
+    """The harness error line in an on-device test run, if the driver never reached the app."""
+    for line in (output or "").splitlines():
+        if any(h.lower() in line.lower() for h in HARNESS_FAILURES):
+            return line.strip()[:200]
+    return None
+
+
+def test_counts(output: str) -> tuple[int, int] | None:
+    """(passed, failed) from a test runner's summary: flutter ('01:17 +3 -11: ...') or vitest/jest ('Tests  3 failed | 2 passed')."""
+    import re
+
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    flutter = re.findall(r"\d+:\d+ \+(\d+)(?: ~\d+)?(?: -(\d+))?:", clean)
+    if flutter:
+        passed, failed = flutter[-1]
+        return int(passed), int(failed or 0)
+    m = re.search(r"Tests\s+(?:(\d+) failed)?(?:\s*\|\s*)?(?:(\d+) passed)?", clean)
+    if m and (m.group(1) or m.group(2)):
+        return int(m.group(2) or 0), int(m.group(1) or 0)
+    return None
+
+
+def suspect_suite(output: str, ever_passed: bool, minimum: int = 3) -> bool:
+    """A suite that has never passed and fails at least half of at least `minimum` tests is more likely badly written
+    than the whole app broken: its writer must look at it again, before a developer changes working code."""
+    counts = test_counts(output)
+    if ever_passed or counts is None:
+        return False
+    passed, failed = counts
+    return passed + failed >= minimum and failed * 2 >= passed + failed
+
+
+def failed_test_files(output: str, workdir: str, test_dir: str) -> list[str]:
+    """Test files (relative to the app folder) that failed in a `flutter test` run, from its output lines such as
+    "01:17 +3 -16: /workspace/app/integration_test/cart_test.dart: adds to cart [E]"."""
+    import re
+
+    pattern = re.compile(rf"(?:/workspace/)?(?:{re.escape(workdir.strip('/'))}/)?({re.escape(test_dir.strip('/'))}/[\w./-]+\.dart):")
+    found: list[str] = []
+    for line in output.splitlines():
+        if "[E]" in line or "FAILED" in line:
+            found += [m.group(1) for m in pattern.finditer(line) if m.group(1) not in found]
+    return found
+
+
+def subset_test_command(command: str, test_dir: str, files: list[str]) -> str | None:
+    """`command` with its test folder replaced by just `files`; None when the folder is not a plain argument."""
+    parts = command.split()
+    if parts.count(test_dir) != 1 or not files:
+        return None
+    return " ".join(" ".join(files) if p == test_dir else p for p in parts)
+
+
 class DeviceError(RuntimeError):
     pass
 
@@ -144,6 +204,7 @@ class Emulator:
         self.runtime = runtime
         self.boot_timeout_s = boot_timeout_s
         self._proc: subprocess.Popen | None = None
+        self.wait_s = 120   # longest wait for the device to show up in adb
 
     @property
     def serial(self) -> str:
@@ -151,10 +212,20 @@ class Emulator:
 
     def run(self, command: str, workdir: str, timeout_s: int | None = None) -> SandboxResult:
         """Run a device command (e.g. flutter test -d <serial>) in the container, after the
-        container's fresh adb server has found the emulator."""
-        script = f"adb start-server >/dev/null 2>&1; adb -s {self.serial} wait-for-device; {command}"
+        container's fresh adb server has found the emulator. A device that never shows up (hung or
+        crashed emulator) fails the command after `wait_s` instead of blocking it."""
+        script = (f"adb start-server >/dev/null 2>&1; timeout {self.wait_s} adb -s {self.serial} wait-for-device "
+                  f"|| {{ echo 'The emulator {self.serial} is not reachable (hung or not running)'; exit 1; }}; {command}")
         return self.sandbox.run_trusted(self.runtime, workdir, f"sh -c {shlex.quote(script)}", host_network=True,
                                         timeout_s=timeout_s)
+
+    def build(self, command: str, workdir: str, timeout_s: int | None = None) -> SandboxResult:
+        """Build the app (no device needed): run before the emulator boots so they don't compete."""
+        return self.sandbox.run_trusted(self.runtime, workdir, command, host_network=True, timeout_s=timeout_s)
+
+    def responsive(self) -> bool:
+        """The emulator process is running and the device answers."""
+        return bool(self._host_pids()) and self.is_booted()
 
     def adb(self, *args: str, workdir: str = ".") -> SandboxResult:
         """adb against the (booted) device, after the container's adb server has found it."""
@@ -214,14 +285,28 @@ class Emulator:
     def stop(self) -> None:
         """Power the device off (no console auth token needed), then make sure the emulator
         process on this machine is gone."""
-        self.run(f"adb -s {self.serial} shell reboot -p", ".")
+        if not self._host_pids():
+            self._proc = None
+            return
+        # Short, bounded attempt: a hung emulator never answers, so don't wait for it.
+        script = f"adb start-server >/dev/null 2>&1; timeout 20 adb -s {self.serial} shell reboot -p"
+        self.sandbox.run_trusted(self.runtime, ".", f"sh -c {shlex.quote(script)}", host_network=True, timeout_s=90)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and self._host_pids():
             time.sleep(2)
-        for pid in self._host_pids():
+        for sig in (15, 9):
+            for pid in self._host_pids():
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and self._host_pids():
+                time.sleep(1)
+        if self._proc is not None:
             try:
-                os.kill(pid, 15)
-            except ProcessLookupError:
+                self._proc.wait(timeout=5)   # reap it so it doesn't linger as a zombie
+            except subprocess.TimeoutExpired:
                 pass
         self._proc = None
 

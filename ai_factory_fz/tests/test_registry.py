@@ -6,9 +6,9 @@ from agentic_sdlc.registry.profiles import Profile
 from agentic_sdlc.settings import load_config
 
 ALL_AGENTS = [
-    "customer", "spec_writer", "project_manager", "architect", "ui_ux_designer",
+    "business_analyst", "project_manager", "architect", "ui_ux_designer",
     "backend_developer", "frontend_developer", "qa_engineer", "deployment_engineer",
-    "integration_pass", "smoke_tester",
+    "integration_pass", "smoke_tester", "test_writer", "code_reviewer",
 ]
 
 
@@ -50,15 +50,15 @@ def test_profile_context_is_added_to_backstory():
     profile = Profile.load("flutter_nestjs_ecommerce")
     reg = AgentRegistry(load_config("agents"), ModelRegistry.from_config(), profile)
     assert "Project conventions" in reg.definition("architect")["backstory"]
-    assert "Project conventions" not in reg.definition("customer")["backstory"]
+    assert "Project conventions" not in reg.definition("smoke_tester")["backstory"]
 
 
 def test_profile_overrides_agent_fields(tmp_path):
     (tmp_path / "p").mkdir()
-    (tmp_path / "p" / "profile.yaml").write_text("name: p\nagent_overrides:\n  customer:\n    goal: Custom goal\n")
+    (tmp_path / "p" / "profile.yaml").write_text("name: p\nagent_overrides:\n  business_analyst:\n    goal: Custom goal\n")
     profile = Profile.load("p", profiles_dir=tmp_path)
     reg = AgentRegistry(load_config("agents"), ModelRegistry.from_config(), profile)
-    assert reg.definition("customer")["goal"] == "Custom goal"
+    assert reg.definition("business_analyst")["goal"] == "Custom goal"
 
 
 def test_agent_with_tools_needs_a_resolver():
@@ -107,10 +107,10 @@ def test_pipeline_model_overrides():
 
     reg = ModelRegistry.from_config(load_config("pipeline.demo")["models"])
     reg.backend = Backend.API
-    assert reg.spec_for("architect").model == "anthropic/claude-haiku-4-5-20251001"
-    assert reg.spec_for("backend_developer").model == "anthropic/claude-haiku-4-5-20251001"
+    assert reg.spec_for("architect").model == "anthropic/claude-sonnet-5-5"   # demo: balanced tier
+    assert reg.spec_for("backend_developer").model == "anthropic/claude-sonnet-5-5"
     assert "effort" not in reg.spec_for("architect").params
-    assert ModelRegistry.from_config().spec_for("architect").model.endswith("claude-haiku-4-5-20251001")
+    assert ModelRegistry.from_config().spec_for("architect").model.endswith("claude-opus-5-5")
     with pytest.raises(KeyError, match="unknown agents"):
         ModelRegistry.from_config({"nobody": "fast"})
 

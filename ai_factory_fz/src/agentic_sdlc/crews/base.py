@@ -33,7 +33,9 @@ class UsageLimitError(PhaseError):
     account) cannot help until it resets. The run should stop and say when to resume."""
 
 
-_LIMIT_MARKERS = ("hit your session limit", "usage limit", "hit your limit", "rate limit reached for your plan")
+_LIMIT_MARKERS = ("hit your session limit", "usage limit", "hit your limit", "rate limit reached for your plan",
+                  # the API account itself: no model call can succeed until someone adds credit
+                  "credit balance is too low", "insufficient credit", "insufficient_quota", "billing_error")
 
 # CrewAI 1.15.x: output_pydantic + task guardrails skip initial export, then retry via
 # _export_output / LLM converter paths that can raise "Agent must be provided if converter_cls

@@ -16,6 +16,10 @@ class Runtime(BaseModel):
     # paths, e.g. Flutter), then give files it created back to the host user.
     run_as_root: bool = False
     env: dict[str, str] = Field(default_factory=dict)   # Docker mode only; container paths
+    # Docker mode only: named volumes ("name:/container/path") that outlive the container, so downloads such as
+    # the Android SDK parts and the Gradle cache are fetched once, not in every round and every run. A new volume
+    # is filled from the image's own content at that path the first time.
+    volumes: list[str] = Field(default_factory=list)
 
 
 class SandboxConfig(BaseModel):
@@ -29,8 +33,36 @@ class ScaffoldStep(BaseModel):
     runtime: str | None = None           # defaults to the component's runtime
     workdir: str = "."
     copy_from: str | None = None         # or: copy a workspace file
+    template: str | None = None          # or: copy a file/folder from the profile's templates/ folder
     copy_to: str | None = None
     creates: str | None = None           # skip the step if this path already exists
+
+
+class ScanStep(BaseModel):
+    """A verification scan run per milestone (lint, dependency audit, coverage...): its raw output is kept."""
+    name: str
+    command: str
+    severity: str = "major"              # blocker | major | minor | info (info: reported, never fails the milestone)
+    network: bool = False                # the scan needs the network (e.g. an audit), so it runs on the host network
+
+
+class AcceptanceDatabase(BaseModel):
+    """A throwaway PostgreSQL the acceptance suite runs against (started by the pipeline, see build/services.py)."""
+    image: str = "postgres:16"
+    user: str = "app"
+    password: str = "app"
+    name: str = "app"
+    env_var: str = "DATABASE_URL"
+    url: str = "postgresql://{user}:{password}@localhost:{port}/{name}?schema=public"
+    prepare: list[str] = Field(default_factory=list)   # commands run before the suite, e.g. prisma db push
+
+
+class AcceptanceTests(BaseModel):
+    """Where the Test Writer puts a component's locked acceptance tests and how they run (in the workdir)."""
+    dir: str                             # e.g. server/test/acceptance (relative to the run folder)
+    command: str                         # e.g. npm run test:acceptance
+    note: str = ""                       # extra instruction for the Test Writer (e.g. add the npm script)
+    database: AcceptanceDatabase | None = None
 
 
 class Component(BaseModel):
@@ -39,6 +71,25 @@ class Component(BaseModel):
     runtime: str | None = None           # None: no toolchain needed (e.g. config files)
     checks: list[str] = Field(default_factory=list)   # must pass before an item counts as done
     scaffold: list[ScaffoldStep] = Field(default_factory=list)
+    acceptance: AcceptanceTests | None = None
+    scans: list[ScanStep] = Field(default_factory=list)
+
+
+class SandboxRequest(BaseModel):
+    path: str                                  # a GET, relative to the API's base URL
+    expect: int = 200                          # 0: any answer below 500 (reached and handled, e.g. 401 without a login)
+
+
+class SandboxCheckConfig(BaseModel):
+    """The built API against the real third-party sandbox, read-only (see release/sandbox_check.py)."""
+    compose_file: str = "infra/docker-compose.sandbox.yml"
+    env_file: str = "infra/sandbox.env"        # git-ignored; site URL and test account
+    project: str = "sdlc-sandbox-check"
+    port: int = 3200
+    health_path: str = "/api/v1/health"
+    startup_timeout_s: int = 120
+    checks: list[SandboxRequest] = Field(default_factory=list)
+    contract_gets: bool = True                 # also GET every parameter-free read in docs/api-contract.yaml (no 5xx allowed)
 
 
 class ReleaseConfig(BaseModel):
@@ -53,6 +104,9 @@ class ReleaseConfig(BaseModel):
     local_start: str = ""                      # command that runs the API (in the component workdir)
     smoke_command: str = ""                    # runs the smoke suite; gets SMOKE_BASE_URL
     package_commands: list[str] = Field(default_factory=list)  # build release artifacts (API component)
+    staging_notes: str = ""                    # extra instructions for the Deployment engineer
+    sandbox_check: SandboxCheckConfig | None = None   # real-site check, read-only; None: the profile has none
+    rollback_steps: list[str] = Field(default_factory=list)   # how to undo a deployment; shown at G7 (none: flagged)
 
 
 class DeviceConfig(BaseModel):
@@ -79,6 +133,9 @@ class Profile(BaseModel):
     description: str = ""
     stack: dict[str, str] = Field(default_factory=dict)
     domain_entities: list[str] = Field(default_factory=list)
+    # False: the API owns no database (e.g. it fronts another system); no Prisma schema, no
+    # data-model guardrails, staging without PostgreSQL.
+    database: bool = True
     agent_context: dict[str, list[str]] = Field(default_factory=dict)
     agent_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     components: dict[str, Component] = Field(default_factory=dict)
@@ -98,6 +155,30 @@ class Profile(BaseModel):
 
     def stack_summary(self) -> str:
         return "; ".join(f"{k}: {v}" for k, v in self.stack.items())
+
+    def layout_summary(self) -> str:
+        """The repository folders the build tooling creates and the coding agents work in."""
+        lines = [f"- {c.workdir}/: the {name} ({c.agent})" for name, c in self.components.items() if c.workdir != "."]
+        copies = (self.guardrails.get("contract_copies") or {}).get("docs/api-contract.yaml", [])
+        lines.append("- docs/api-contract.yaml: the API contract" + (f" (copied to {', '.join(copies)})" if copies else ""))
+        for name, c in self.components.items():
+            for step in c.scaffold:
+                if step.template and step.copy_to:
+                    lines.append(f"- {step.copy_to}/: provided ready-made from the profile; extend it, do not rewrite it")
+                elif step.run and step.creates and Path(step.creates).parent.as_posix() not in (c.workdir, "."):
+                    lines.append(f"- {Path(step.creates).parent.as_posix()}/: generated by the {name} scaffold")
+        lines.append(f"- {self.release.compose_file}, {self.release.env_file}: staging")
+        return "\n".join(lines)
+
+    def entry_points(self) -> dict[str, list[str]]:
+        """component -> the files that start it (guardrails.entry_points in the profile)."""
+        return {k: list(v) for k, v in (self.guardrails.get("entry_points") or {}).items()}
+
+    def layout_roots(self) -> set[str]:
+        """Top-level folders of the layout (anything else is outside it)."""
+        paths = [c.workdir for c in self.components.values()] + ["docs", self.release.compose_file]
+        paths += [s.copy_to or s.creates or "" for c in self.components.values() for s in c.scaffold]
+        return {p.split("/")[0] for p in paths if p and p != "."} | {"docs", "infra", ".github"}
 
     def context_for(self, agent_key: str) -> str:
         """Concatenated knowledge files configured for this agent."""

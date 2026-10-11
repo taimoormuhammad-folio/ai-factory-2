@@ -140,6 +140,7 @@ class SandboxRunner:
         rel = host_dir.relative_to(self.workspace.root).as_posix()
         container_dir = CONTAINER_ROOT if rel == "." else f"{CONTAINER_ROOT}/{rel}"
         env_args = [a for k, v in {**self.config.env, **rt.env, **(env or {})}.items() for a in ("-e", f"{k}={v}")]
+        volume_args = [a for v in rt.volumes for a in ("-v", v)]
         network = "host" if host_network else ("bridge" if self.network else "none")
         owner = f"{os.getuid()}:{os.getgid()}"
         if rt.run_as_root:
@@ -156,6 +157,7 @@ class SandboxRunner:
             "--network", network,
             *user_args,
             *env_args,
+            *volume_args,
             "-v", f"{self.workspace.root}:{CONTAINER_ROOT}",
             "-w", container_dir,
             rt.image, *argv,

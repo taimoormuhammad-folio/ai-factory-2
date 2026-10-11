@@ -1,20 +1,24 @@
-"""Planning phase: the Architect designs the solution; the Project manager breaks it down.
-
-Order: Architect (from the PRD) -> UI/UX designer (design phase) -> Project manager, so the work
-breakdown and estimates are built on the actual solution: every API operation, data model and
-screen must be covered by a work item, and app items depend on the backend items they call.
-"""
+"""Design and Plan: the Architect designs the solution (options, contract, ADRs) and breaks it into the
+WBS (tasks with owned paths, verify commands and acceptance criteria); the Project manager then
+sequences and estimates the WBS into the delivery plan without changing it."""
 
 from typing import Callable
 
 from agentic_sdlc.artifacts.architecture import ArchitectureDoc
 from agentic_sdlc.artifacts.backlog import Backlog
+from agentic_sdlc.artifacts.plan import DeliveryPlan, to_backlog
+from agentic_sdlc.artifacts.wbs import Wbs
 from agentic_sdlc.artifacts.design import DesignSystem
 from agentic_sdlc.artifacts.prd import PRD
 from agentic_sdlc.crews.base import TaskResult, TaskRunner, artifact_guardrail
 from agentic_sdlc.scope import Scope
 
 PHASE = "planning"
+
+DATA_LAYER = "A complete Prisma schema (prisma_schema) for PostgreSQL."
+NO_DATA_LAYER = ("No database: the API keeps no data of its own, so leave prisma_schema empty. Module "
+                 "entities name the records of the external system the API calls.")
+NO_LAYOUT = "(not fixed by the profile)"
 
 
 def design_architecture(
@@ -25,10 +29,15 @@ def design_architecture(
     revision_notes: str,
     scope: Scope | None = None,
     guardrails: Callable[[ArchitectureDoc], list[str]] | None = None,
+    database: bool = True,
+    layout: str = "",
 ) -> TaskResult[ArchitectureDoc]:
-    """`guardrails`: extra checks on the design (see guardrails/architecture.py)."""
+    """`guardrails`: extra checks on the design (see guardrails/architecture.py).
+    `database`: False for stacks whose API keeps no data (no Prisma schema).
+    `layout`: the repository folders the build tooling creates (Profile.layout_summary)."""
     scope = scope or Scope()
     extra = guardrails or (lambda a: [])
+    data_errors = ArchitectureDoc.prisma_errors if database else ArchitectureDoc.no_database_errors
     return runner.run(
         PHASE,
         "design_architecture",
@@ -38,11 +47,13 @@ def design_architecture(
             "domain_entities": ", ".join(domain_entities),
             "revision_notes": revision_notes or "(none)",
             "scope_rules": scope.rules_text(),
+            "data_layer": DATA_LAYER if database else NO_DATA_LAYER,
+            "layout": layout or NO_LAYOUT,
         },
         ArchitectureDoc,
         guardrail=artifact_guardrail(
             ArchitectureDoc,
-            lambda a: a.openapi_errors() + a.prisma_errors() + scope.architecture_errors(a) + extra(a),
+            lambda a: a.openapi_errors() + data_errors(a) + scope.architecture_errors(a) + extra(a),
         ),
     )
 
@@ -53,36 +64,66 @@ def screens_summary(design: DesignSystem | None) -> str:
     return "\n".join(f"- {s.id} {s.name} ({s.route}): stories {', '.join(s.story_ids)}" for s in design.screens)
 
 
-def plan_work(
-    runner: TaskRunner,
-    prd: PRD,
-    architecture: ArchitectureDoc,
-    design: DesignSystem | None,
-    stack: str,
-    revision_notes: str = "",
-    scope: Scope | None = None,
-) -> TaskResult[Backlog]:
+def wbs_errors(wbs: Wbs, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str],
+               allowed: dict[str, list[str]] | None = None) -> list[str]:
+    known_acs = {c.id for _, c in prd.criteria()}
+    return (wbs.structure_errors() + wbs.w1_ownership(workdirs) + wbs.w2_verify(allowed)
+            + wbs.w3_coverage(prd.must_have_ac_ids(), known_acs, architecture.operations(), architecture.data_models()))
+
+
+def design_wbs(runner: TaskRunner, prd: PRD, architecture: ArchitectureDoc, workdirs: dict[str, str],
+               stack: str, revision_notes: str = "", layout: str = "",
+               allowed: dict[str, list[str]] | None = None,
+               entry_points: dict[str, list[str]] | None = None, scope: Scope | None = None) -> TaskResult[Wbs]:
+    """The Architect's work breakdown: packages -> small tasks, each owning paths with a verify command.
+    `allowed`: component -> the command prefixes its verify command may use. The scope limits apply here, where the
+    task list is made: the Project manager may not add or drop tasks, so an oversize WBS cannot be fixed later."""
     scope = scope or Scope()
-    must_haves = prd.must_have_ids()
-    operations = architecture.operations()
-    models = architecture.data_models()
-    screen_ids = [s.id for s in design.screens] if design else []
-
-    def check(b: Backlog) -> list[str]:
-        return (b.validation_errors(must_haves) + b.coverage_errors(operations, models, screen_ids)
-                + scope.backlog_errors(b))
-
     return runner.run(
         PHASE,
-        "plan_backlog",
+        "design_wbs",
         {
             "prd": prd.to_markdown(),
             "solution": architecture.solution_summary(),
-            "screens": screens_summary(design),
             "stack": stack,
+            "layout": layout or NO_LAYOUT,
+            "workdirs": "\n".join(
+                f"- {c}: {w}/ (verify with: {', '.join((allowed or {}).get(c, [])) or 'any listed command'})"
+                for c, w in workdirs.items()),
+            "entry_points": "\n".join(f"- {c}: {', '.join(ps)}" for c, ps in (entry_points or {}).items()) or "(none)",
+            "scope_rules": scope.rules_text(),
+            "revision_notes": revision_notes or "(none)",
+        },
+        Wbs,
+        guardrail=artifact_guardrail(Wbs, lambda w: wbs_errors(w, prd, architecture, workdirs, allowed)
+                                     + scope._over("work items", len(w.tasks), scope.max_work_items)),
+    )
+
+
+def plan_delivery(runner: TaskRunner, prd: PRD, wbs: Wbs, revision_notes: str = "",
+                  scope: Scope | None = None, entry_points: dict[str, list[str]] | None = None) -> TaskResult[DeliveryPlan]:
+    """The Project manager sequences the WBS into milestones and estimates every task.
+    `entry_points`: component -> the files that start it; each milestone must own them before building on them."""
+    scope = scope or Scope()
+    must_haves = prd.must_have_ids()
+
+    def check(plan: DeliveryPlan) -> list[str]:
+        errors = plan.errors(wbs, entry_points)
+        if not errors:
+            backlog = to_backlog(wbs, plan)
+            errors = backlog.validation_errors(must_haves) + scope.backlog_errors(backlog)
+        return errors
+
+    return runner.run(
+        PHASE,
+        "plan_delivery",
+        {
+            "prd": prd.to_markdown(),
+            "wbs": wbs.to_markdown(),
+            "entry_points": "\n".join(f"- {c}: {', '.join(ps)}" for c, ps in (entry_points or {}).items()) or "(none)",
             "revision_notes": revision_notes or "(none)",
             "scope_rules": scope.rules_text(),
         },
-        Backlog,
-        guardrail=artifact_guardrail(Backlog, check),
+        DeliveryPlan,
+        guardrail=artifact_guardrail(DeliveryPlan, check),
     )

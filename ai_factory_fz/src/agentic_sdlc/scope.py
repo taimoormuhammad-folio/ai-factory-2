@@ -1,6 +1,6 @@
 """Scope limits: keep a run small (e.g. a demo) by capping what the planning agents produce.
 
-Configured under `scope:` in the pipeline file. The limits go into the Spec writer, Project
+Configured under `scope:` in the pipeline file. The limits go into the Business analyst, Project
 manager, Architect and UI/UX prompts, and the output checks reject anything over them, so the
 agent has to cut scope instead of the limit being a suggestion.
 """

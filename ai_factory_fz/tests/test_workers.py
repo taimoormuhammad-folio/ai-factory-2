@@ -34,9 +34,10 @@ def fake_cli(tmp_path, reply):
         wrapper = tmp_path / "claude.cmd"
         wrapper.write_text(f'@"{sys.executable}" "{script}" %*\n', encoding="utf-8")
         return str(wrapper), log
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    script.with_name("claude").write_text(f"#!{sys.executable}\n" + script.read_text())
-    return str(script.with_name("claude")), log
+    cli = script.with_name("claude")
+    cli.write_text(f"#!{sys.executable}\n" + script.read_text())
+    cli.chmod(cli.stat().st_mode | stat.S_IEXEC)
+    return str(cli), log
 
 
 def setup(tmp_path, mode, backend=Backend.CLAUDE_CODE):
@@ -52,7 +53,8 @@ def setup(tmp_path, mode, backend=Backend.CLAUDE_CODE):
 def job():
     return Job("build", "backend_developer", "implement_work_item",
                {"item_id": "WI-005", "item_title": "Sign up", "item_description": "d", "component": "backend",
-                "milestone": "M2", "stories": "s", "done_items": "-", "docs_dir": "/x", "checks": "npm test", "problems": "(none)"},
+                "milestone": "M2", "stories": "s", "done_items": "-", "docs_dir": "/x", "checks": "npm test", "problems": "(none)",
+                "acceptance_files": "(none)"},
                WorkItemResult, "server", "node")
 
 
@@ -69,7 +71,7 @@ def test_claude_code_worker_local_mode(tmp_path, monkeypatch):
     rec = json.loads(log.read_text())
     argv = rec["argv"]
     assert rec["cwd"] == str(ws.root / "server")
-    assert argv[argv.index("--model") + 1] == "claude-haiku-4-5-20251001"
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5-5"
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
     allowed = argv[argv.index("--allowedTools") + 1 : argv.index("--disallowedTools")]
     assert {"Read", "Edit", "Write", "Bash(npm test)", "Bash(npm test *)"} <= set(allowed)
@@ -162,4 +164,25 @@ def test_usage_limit_stops_without_trying_the_fallback_model(tmp_path):
     cli, log = fake_cli(tmp_path, {**REPLY, "is_error": False, "result": "You've hit your session limit · resets 8:10pm", "structured_output": None})
     with pytest.raises(UsageLimitError, match="resets 8:10pm"):
         ClaudeCodeWorker(agents, load_config("tasks"), ws, sandbox, cli_path=cli).run(job())
-    assert "claude-haiku-4-5-20251001" in json.loads(log.read_text())["argv"]  # primary model (Haiku-only config)
+    assert "claude-sonnet-5-5" in json.loads(log.read_text())["argv"]  # primary model (balanced tier)
+
+
+def test_wrappers_run_from_the_root_in_the_toolchains_folder(tmp_path, monkeypatch):
+    from agentic_sdlc.tools import sandbox_cli
+    from agentic_sdlc.tools.sandbox_exec import SandboxResult
+
+    profile, ws, sandbox, agents = setup(tmp_path, SandboxMode.DOCKER)
+    monkeypatch.setattr(sandbox, "unavailable_reason", lambda rt: None)
+    worker = ClaudeCodeWorker(agents, load_config("tasks"), ws, sandbox)
+    worker._install_wrappers(["node", "flutter"])
+    assert "--default-workdir app" in (ws.root / ".sdlc/bin/flutter").read_text()
+    assert "--default-workdir server" in (ws.root / ".sdlc/bin/npm").read_text()
+
+    seen = {}
+    monkeypatch.setattr("agentic_sdlc.tools.sandbox_exec.SandboxRunner._execute",
+                        lambda self, rt, wd, argv, extra_env=None, host_network=False, timeout_s=None:
+                        seen.update(wd=wd) or SandboxResult(exit_code=0, output=""))
+    monkeypatch.chdir(ws.root)   # QA calls it from the workspace root
+    sandbox_cli.main(["--workspace", str(ws.root), "--profile", "flutter_nestjs_ecommerce", "--runtime", "flutter",
+                      "--default-workdir", "app", "--", "flutter", "test"])
+    assert seen["wd"] == "app"

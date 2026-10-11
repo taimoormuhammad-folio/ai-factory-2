@@ -47,7 +47,9 @@ def test_emulator_device_commands_run_in_the_container_after_adb_finds_the_devic
     em.run("flutter test integration_test -d emulator-5554", "app")
     runtime, workdir, command, host = sb.calls[-1]
     assert (runtime, workdir, host) == ("flutter", "app", True)
-    assert command.startswith("sh -c ") and "adb -s emulator-5554 wait-for-device; flutter test" in command
+    assert command.startswith("sh -c ") and "timeout 120 adb -s emulator-5554 wait-for-device" in command
+    assert command.index("wait-for-device") < command.index("flutter test")
+    assert "exit 1" in command   # a device that never shows up fails the command instead of hanging
     em.launch("com.x.app")
     assert "monkey -p com.x.app" in sb.calls[-1][2]
 
@@ -65,13 +67,22 @@ class FakeToolchain:
 class FakeEmulator:
     serial = "emulator-5554"
 
-    def __init__(self, reason=None, build_ok=True, test_ok=True):
+    def __init__(self, reason=None, build_ok=True, test_ok=True, install_ok=(True,), responsive=(True,)):
         self.tc = FakeToolchain(reason)
         self.build_ok, self.test_ok = build_ok, test_ok
-        self.commands, self.started, self.stopped = [], 0, 0
+        self.install_ok, self.responsive_seq = list(install_ok), list(responsive)
+        self.commands, self.started, self.stopped, self.events = [], 0, 0, []
 
     def start(self, window=False):
         self.started += 1
+        self.events.append("start")
+
+    def build(self, command, workdir, timeout_s=None):
+        self.events.append("build")
+        return self.run(command, workdir, timeout_s)
+
+    def responsive(self):
+        return self.responsive_seq.pop(0) if len(self.responsive_seq) > 1 else self.responsive_seq[0]
 
     def run(self, command, workdir, timeout_s=None):
         self.commands.append(command)
@@ -79,7 +90,8 @@ class FakeEmulator:
         return SandboxResult(exit_code=0 if ok else 1, output="ok" if ok else "SocketException: Cleartext HTTP traffic to 10.0.2.2 not permitted")
 
     def install(self, apk, workdir, app_id=""):
-        return SandboxResult(exit_code=0, output="Success")
+        ok = self.install_ok.pop(0) if len(self.install_ok) > 1 else self.install_ok[0]
+        return SandboxResult(exit_code=0 if ok else 1, output="Success" if ok else "Timed out after 300s")
 
     def launch(self, app_id):
         return SandboxResult(exit_code=0, output="")
@@ -89,6 +101,7 @@ class FakeEmulator:
 
     def stop(self):
         self.stopped += 1
+        self.events.append("stop")
 
 
 def device_releaser(tmp_path, prd, backlog, worker, emulator, test_dir=True):
@@ -179,7 +192,7 @@ def test_install_and_launch_wait_for_the_device(tmp_path):
     em.install("build/app.apk", "app")
     em.launch("com.x.app")
     for _, _, command, host in sb.calls:
-        assert host and "wait-for-device;" in command
+        assert host and "wait-for-device" in command
     assert "install -r build/app.apk" in sb.calls[0][2]
 
 
@@ -197,3 +210,67 @@ def test_install_replaces_an_app_signed_with_another_debug_key(tmp_path):
     em = Emulator(AndroidToolchain(DeviceConfig()), sb, Workspace.create("r", runs_dir=tmp_path))
     assert em.install("app.apk", "app", "com.x.app").ok
     assert any("uninstall com.x.app" in c for c in sb.calls)
+
+
+# ---------- machine problems on the device side ----------
+
+def test_the_app_is_built_before_the_emulator_boots(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    worker = ScriptedWorker({"integration_review": [QAReport(milestone_id="integration", passed=True, summary="ok")]})
+    em = FakeEmulator()
+    r, s, _ = device_releaser(tmp_path, prd, backlog, worker, em)
+    r.verify()
+    assert em.events[:2] == ["build", "start"]
+
+
+def test_a_hung_emulator_is_restarted_once(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    worker = ScriptedWorker({"integration_review": [QAReport(milestone_id="integration", passed=True, summary="ok")]})
+    em = FakeEmulator(install_ok=(False, True), responsive=(False, True))
+    r, s, _ = device_releaser(tmp_path, prd, backlog, worker, em)
+    r.verify()
+    assert s.release.verified and s.release.device_passed
+    assert em.events[:4] == ["build", "start", "stop", "start"]
+
+
+def test_an_emulator_that_keeps_hanging_is_a_machine_problem_not_a_frontend_bug(tmp_path, prd, backlog, monkeypatch):
+    monkeypatch.setattr("agentic_sdlc.release.releaser.time.sleep", lambda s: None)
+    worker = ScriptedWorker({"integration_review": [QAReport(milestone_id="integration", passed=True, summary="ok")]})
+    em = FakeEmulator(install_ok=(False,), responsive=(False,))
+    r, s, _ = device_releaser(tmp_path, prd, backlog, worker, em)
+    r.verify()
+    assert not [j for j in worker.jobs if j.task_key == "fix_work_item"]
+    assert s.release.device_passed is None and "stopped responding" in s.release.device_note
+    assert "not run: the emulator stopped responding" in r.gate_summary()
+
+
+def test_stopping_a_dead_emulator_does_not_wait_for_it(tmp_path, monkeypatch):
+    from agentic_sdlc.workspace import Workspace
+    sb = RecordingSandbox()
+    em = Emulator(AndroidToolchain(DeviceConfig()), sb, Workspace.create("r", runs_dir=tmp_path))
+    monkeypatch.setattr(em, "_host_pids", lambda: [])
+    em.stop()
+    assert sb.calls == []                     # nothing running: no adb at all
+    pids = [[4242], [4242], []]
+    monkeypatch.setattr(em, "_host_pids", lambda: pids.pop(0) if len(pids) > 1 else pids[0])
+    monkeypatch.setattr("agentic_sdlc.release.device.time.sleep", lambda s: None)
+    monkeypatch.setattr("agentic_sdlc.release.device.os.kill", lambda pid, sig: None)
+    em.stop()
+    command = sb.calls[-1][2]
+    assert "timeout 20 adb" in command and "wait-for-device" not in command
+
+
+def test_device_note_says_why_checks_did_not_run(tmp_path, prd, backlog):
+    from agentic_sdlc.release.staging import StagingError
+
+    class Down(FakeStaging):
+        def start(self):
+            raise StagingError("Port 3999 is already in use", environment=True)
+
+    worker = ScriptedWorker()
+    r, s, ws = releaser(tmp_path, prd, backlog, worker, staging=Down(), cfg={"fix_rounds": 1, "device": {"enabled": True}})
+    r.emulator = FakeEmulator()
+    s.build.items["WI-002"] = ItemProgress(status="done", summary="screen")
+    r.verify()
+    report = (ws.root / "reports" / "release_round1.md").read_text()
+    assert "Not run: staging did not start" in report and "disabled" not in report

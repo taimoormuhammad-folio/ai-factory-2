@@ -51,6 +51,8 @@ class Job(Generic[T]):
     runtime: str | None           # toolchain the agent may run commands with
     extra_runtimes: list[str] = field(default_factory=list)
     feedback: str = ""            # guardrail problems from a rejected previous attempt
+    # Hook policy (hooks/guard.py): owned paths, locked tests, ... Enforced live by Claude Code hooks.
+    policy: dict[str, Any] | None = None
 
 
 class Worker(Protocol):
@@ -92,7 +94,8 @@ def _artifact_from_cli_json(data: dict[str, Any], model: type[T]) -> T:
     # Cursor CLI often finishes with subtype=success and a narrative result (no JSON envelope).
     if model is WorkItemResult and not data.get("is_error"):
         raw = data.get("result") or data.get("text") or data.get("output") or ""
-        if isinstance(raw, str) and raw.strip():
+        # A usage-limit notice is not a work result: let the caller stop the run instead.
+        if isinstance(raw, str) and raw.strip() and not is_usage_limit(raw):
             return WorkItemResult(
                 summary=raw.strip()[:4000],
                 checks_passed=False,
@@ -121,6 +124,9 @@ class _CodeShellWorker:
             return None
         bin_dir = self.workspace.root / ".sdlc" / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
+        # Where a toolchain's commands belong when an agent calls them from the workspace root.
+        home = {c.runtime: c.workdir for c in self.agents.profile.components.values()
+                if c.runtime and c.workdir not in (".", "")}
         for rt in runtimes:
             for tool in {shlex.split(c)[0] for c in self.sandbox.config.allowed_commands.get(rt, [])}:
                 script = bin_dir / tool
@@ -128,7 +134,8 @@ class _CodeShellWorker:
                     "#!/bin/sh\n"
                     f"exec {shlex.quote(sys.executable)} -m agentic_sdlc.tools.sandbox_cli "
                     f"--workspace {shlex.quote(str(self.workspace.root))} --profile {shlex.quote(self.profile_name)} "
-                    f"--runtime {shlex.quote(rt)} -- {shlex.quote(tool)} \"$@\"\n",
+                    f"--runtime {shlex.quote(rt)} --default-workdir {shlex.quote(home.get(rt, ''))} "
+                    f"-- {shlex.quote(tool)} \"$@\"\n",
                     encoding="utf-8",
                 )
                 script.chmod(0o755)
@@ -144,7 +151,10 @@ class _CodeShellWorker:
         if cmds:
             text += (
                 f" Run these commands {shell_hint}, from your working directory, one command at a time "
-                f"(no cd, &&, pipes or redirects): " + "; ".join(cmds) + "."
+                f"(no cd, &&, pipes or redirects): " + "; ".join(cmds) + ". "
+                "If a command is denied or fails to start, do not stop and do not report the task as blocked: "
+                "write the code and tests anyway. The pipeline runs the build, the tests and the task's verify "
+                "command for you after you finish and sends you their output to fix."
             )
         else:
             text += " You cannot run commands; the build and tests are run for you after you finish."
@@ -360,9 +370,29 @@ class ClaudeCodeWorker(_CodeShellWorker):
     def models_for(self, job: Job) -> list[str]:
         return self.agents.models.spec_for(job.agent_key).candidates()
 
+    def hook_settings(self, job: Job) -> str | None:
+        """Write the job's hook policy and a Claude Code settings file that runs the guard; returns its path."""
+        if not job.policy:
+            return None
+        import sys
+        import uuid
+
+        folder = self.workspace.root / ".sdlc" / "hooks"
+        folder.mkdir(parents=True, exist_ok=True)
+        name = uuid.uuid4().hex[:12]
+        policy = folder / f"{name}.policy.json"
+        policy.write_text(json.dumps({"root": str(self.workspace.root), **job.policy}), encoding="utf-8")
+        guard = f'"{sys.executable}" -m agentic_sdlc.hooks.guard "{policy}"'
+        settings = folder / f"{name}.settings.json"
+        settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+            {"matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash", "hooks": [{"type": "command", "command": guard}]},
+        ]}}), encoding="utf-8")
+        return str(settings)
+
     def build_command(self, job: Job, model: str, system: str, prompt: str) -> list[str]:
         docs = str(self.workspace.root / "docs")
-        allowed = ["Read", "Glob", "Grep", "Edit", "Write", *self.agents.web_rules(job.agent_key)]
+        read_only = bool((job.policy or {}).get("read_only"))
+        allowed = ["Read", "Glob", "Grep", *([] if read_only else ["Edit", "Write"]), *self.agents.web_rules(job.agent_key)]
         for c in allowed_commands(self.sandbox, self._runtimes(job)):
             allowed += [f"Bash({c})", f"Bash({c} *)"]
         return [
@@ -377,6 +407,7 @@ class ClaudeCodeWorker(_CodeShellWorker):
             "--json-schema", json.dumps(job.output_model.model_json_schema()),
             "--no-session-persistence",
             "--setting-sources", "",
+            *(["--settings", settings] if (settings := self.hook_settings(job)) else []),
             "--strict-mcp-config",
         ]
 

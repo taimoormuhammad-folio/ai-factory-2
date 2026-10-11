@@ -17,6 +17,7 @@ class FakeSandbox:
         self.unavailable = unavailable or {}
         self.check_results = list(check_results or [])  # consumed by checks; default ok
         self.commands: list[tuple[str, str, str]] = []
+        self.results_for: dict[str, list] = {}   # command -> queued results (verify / acceptance runs)
 
     def unavailable_reason(self, runtime):
         return self.unavailable.get(runtime)
@@ -27,8 +28,17 @@ class FakeSandbox:
 
     def run_trusted(self, runtime, workdir, command, env=None, host_network=False, timeout_s=None):
         self.commands.append((runtime, workdir, command))
+        if command in self.results_for and self.results_for[command]:
+            return self.results_for[command].pop(0)
         if command.startswith("check") and self.check_results:
             return self.check_results.pop(0)
+        return SandboxResult(exit_code=0, output="ok")
+
+    def run(self, runtime, workdir, command):
+        """Agent/WBS commands (verify): recorded, and they pass unless a result is queued for them."""
+        self.commands.append((runtime, workdir, command))
+        if self.results_for.get(command):
+            return self.results_for[command].pop(0)
         return SandboxResult(exit_code=0, output="ok")
 
 
@@ -80,7 +90,7 @@ def make_builder(tmp_path, prd, profile, items, milestones, sandbox=None, worker
         stops.append(reason)
 
     b = Builder(state, ws, profile, sandbox, lambda agent: worker, cfg or BuildConfig(milestones=[]),
-                record=lambda r: r.artifact, checkpoint=lambda msg: None,
+                record=lambda r: r.artifact, checkpoint=lambda msg, paths=None: None,
                 can_continue=lambda: state.status == "running", stop=stop)
     return b, state, sandbox, worker
 
@@ -116,13 +126,25 @@ def test_item_fails_after_attempts_and_dependents_are_blocked(tmp_path, prd, pro
     sandbox = FakeSandbox(check_results=[fail] * 10)
     items = [item("WI-001"), item("WI-002", deps=["WI-001"])]
     b, s, _, _ = make_builder(tmp_path, prd, profile, items, [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001", "WI-002"])],
-                              sandbox=sandbox, cfg=BuildConfig(milestones=[], check_fix_attempts=1))
+                              sandbox=sandbox, cfg=BuildConfig(milestones=[], check_fix_attempts=1, stop_on_failed=False))
     b.run()
     assert s.build.item("WI-001").status == "failed"
     assert s.build.item("WI-001").attempts == 2
     assert s.build.item("WI-002").status == "blocked"
     assert "depends on WI-001, which is failed" in s.build.item("WI-002").reason
     assert s.build.milestone("M1").status == "partial"
+
+
+def test_a_failed_item_stops_the_run_before_more_is_built_on_it(tmp_path, prd, profile):
+    fail = SandboxResult(exit_code=1, output="boom")
+    sandbox = FakeSandbox(check_results=[fail] * 10)
+    items = [item("WI-001"), item("WI-002", deps=["WI-001"])]
+    b, s, _, worker = make_builder(tmp_path, prd, profile, items, [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001", "WI-002"]),
+                                                                  Milestone(id="M2", name="n", goal="g", work_item_ids=[])],
+                                   sandbox=sandbox, cfg=BuildConfig(milestones=[], check_fix_attempts=1))
+    b.run()
+    assert s.status == "stopped" and "WI-001 failed" in s.stop_reason and "resume" in s.stop_reason
+    assert not [j for j in worker.jobs if j.task_key == "qa_milestone"]      # no QA on half a milestone
 
 
 def test_missing_toolchain_blocks_items_but_not_the_run(tmp_path, prd, profile):
@@ -170,14 +192,26 @@ def test_qa_bugs_go_back_to_the_developer_then_pass(tmp_path, prd, profile):
 
 
 def test_bugs_remaining_after_fix_rounds_stop_the_run(tmp_path, prd, profile):
-    bug = Bug(id="BUG-001", work_item_id="WI-001", title="t", severity="blocker", steps="s", expected="e", actual="a")
-    worker = ScriptedWorker({"qa_milestone": [QAReport(milestone_id="M1", passed=False, bugs=[bug], summary="bad")] * 5})
+    # A different bug each round: progress is being made, but the round limit is reached.
+    bugs = [Bug(id=f"BUG-00{i}", work_item_id="WI-001", title=f"problem {i}", severity="blocker", steps="s", expected="e",
+                actual="a") for i in range(1, 6)]
+    worker = ScriptedWorker({"qa_milestone": [QAReport(milestone_id="M1", passed=False, bugs=[b], summary="bad") for b in bugs]})
     b, s, _, _ = make_builder(tmp_path, prd, profile, [item("WI-001")], [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])],
                               worker=worker, cfg=BuildConfig(milestones=[], qa_fix_rounds=1))
     b.run()
     assert s.status == "stopped"
     assert "blocking bug(s) remain" in s.stop_reason
     assert s.build.milestone("M1").status == "failed"
+
+
+def test_a_fix_round_that_changes_nothing_escalates_early(tmp_path, prd, profile):
+    bug = Bug(id="BUG-001", work_item_id="WI-001", title="t", severity="blocker", steps="s", expected="e", actual="a")
+    worker = ScriptedWorker({"qa_milestone": [QAReport(milestone_id="M1", passed=False, bugs=[bug], summary="bad")] * 5})
+    b, s, _, _ = make_builder(tmp_path, prd, profile, [item("WI-001")], [Milestone(id="M1", name="m", goal="g", work_item_ids=["WI-001"])],
+                              worker=worker, cfg=BuildConfig(milestones=[], qa_fix_rounds=3))
+    b.run()
+    assert s.status == "stopped" and "last fix round changed nothing" in s.stop_reason
+    assert s.build.milestone("M1").qa_rounds == 2                  # not all 3 fix rounds were spent
 
 
 def test_minor_bugs_do_not_block(tmp_path, prd, profile):

@@ -4,3 +4,6 @@ lib/
 .DS_Store
 .venv/
 *.html
+
+# Browser automation output (page snapshots, console logs)
+.playwright-mcp/

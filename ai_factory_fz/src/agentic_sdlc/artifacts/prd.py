@@ -44,6 +44,7 @@ class CustomerAnswers(BaseModel):
 
 
 class AcceptanceCriterion(BaseModel):
+    id: str = Field(default="", description="Stable id across the spec: AC-01, AC-02, ... (used by tests and evidence)")
     given: str
     when: str
     then: str
@@ -73,6 +74,16 @@ class PRD(BaseModel):
     non_functional_requirements: list[str]
     out_of_scope: list[str]
     assumptions: list[str] = Field(default_factory=list)
+    edge_cases: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list,
+                                      description="Questions for the Product Owner; never invent the answer")
+
+    def criteria(self) -> list[tuple[str, AcceptanceCriterion]]:
+        """(story id, criterion) for every acceptance criterion."""
+        return [(s.id, c) for s in self.user_stories for c in s.acceptance_criteria]
+
+    def must_have_ac_ids(self) -> list[str]:
+        return [c.id for s in self.user_stories if s.priority == "must" for c in s.acceptance_criteria]
 
     def must_have_ids(self) -> list[str]:
         return [s.id for s in self.user_stories if s.priority == "must"]
@@ -89,7 +100,7 @@ class PRD(BaseModel):
                 "",
             ]
             lines += [
-                f"- **Given** {c.given} **when** {c.when} **then** {c.then}"
+                f"- {c.id + ': ' if c.id else ''}**Given** {c.given} **when** {c.when} **then** {c.then}"
                 for c in s.acceptance_criteria
             ]
             lines.append("")
@@ -97,5 +108,7 @@ class PRD(BaseModel):
             "## Non-functional requirements", _bullets(self.non_functional_requirements), "",
             "## Out of scope", _bullets(self.out_of_scope), "",
             "## Assumptions", _bullets(self.assumptions), "",
+            "## Edge cases", _bullets(self.edge_cases), "",
+            "## Open questions for the Product Owner", _bullets(self.open_questions), "",
         ]
         return "\n".join(lines)

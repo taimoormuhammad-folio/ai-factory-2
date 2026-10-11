@@ -28,13 +28,34 @@ def _print_result(flow: SDLCFlow) -> None:
     print(f"Summary:   {RUNS_DIR / s.run_id / 'reports' / 'run_summary.md'}")
 
 
+def _run_flow(flow: SDLCFlow, inputs: dict) -> SDLCFlow:
+    """Kick off a flow; a failure inside it ends as a recorded stop (status, reason, commit), never as a run that
+    silently stays 'running' with nothing saved."""
+    try:
+        flow.kickoff(inputs=inputs)
+    except Exception as e:                      # noqa: BLE001 - any failure of a step must be recorded
+        s = flow.state
+        if s.run_id and s.status == "running":
+            s.status = "stopped"
+            s.stop_reason = f"A step failed: {str(e)[:1500]}\nFix the cause, then: uv run resume {s.run_id}"
+            try:
+                ws = Workspace.open(s.run_id)
+                ws.save_state(s)
+                ws.commit(f"Run stopped: {type(e).__name__}")
+            except Exception:                   # noqa: BLE001 - recording is best effort
+                pass
+        _print_result(flow)
+        raise SystemExit(1) from e
+    return flow
+
+
 def start_run(brief_path: Path, profile: str, run_id: str | None = None, pipeline: str = "pipeline") -> SDLCFlow:
     brief = brief_path.read_text(encoding="utf-8")
     if not (CONFIG_DIR / f"{pipeline}.yaml").exists():
         raise SystemExit(f"No pipeline config at {CONFIG_DIR / (pipeline + '.yaml')}")
     run_id = run_id or new_run_id(brief_path.stem)
     flow = SDLCFlow()
-    flow.kickoff(inputs={"run_id": run_id, "profile": profile, "brief": brief, "pipeline": pipeline})
+    _run_flow(flow, {"run_id": run_id, "profile": profile, "brief": brief, "pipeline": pipeline})
     _print_result(flow)
     return flow
 
@@ -42,7 +63,7 @@ def start_run(brief_path: Path, profile: str, run_id: str | None = None, pipelin
 def resume_run(run_id: str) -> SDLCFlow:
     ws = Workspace.open(run_id)
     flow = SDLCFlow(restore_json=ws.load_state_json())
-    flow.kickoff(inputs={"run_id": run_id})
+    _run_flow(flow, {"run_id": run_id})
     _print_result(flow)
     return flow
 
@@ -66,6 +87,183 @@ def resume() -> None:
     args = parser.parse_args()
     _apply_milestones(args.milestones)
     resume_run(args.run_id)
+
+
+def intake_cmd(argv: list[str] | None = None, input_fn=input) -> None:
+    """Step 0 for the Product Owner: describe the request and its risk tier; writes briefs/<title>.md."""
+    from agentic_sdlc import intake
+
+    parser = argparse.ArgumentParser(description="Write a request (intent) for a new run")
+    parser.add_argument("--briefs-dir", type=Path, default=PROJECT_ROOT / "briefs")
+    args = parser.parse_args(argv)
+    path = intake.write_brief(args.briefs_dir, intake.interview(input_fn))
+    print(f"Wrote {path}\nStart the run with:  uv run kickoff --brief {path} --profile <profile> --pipeline <pipeline>")
+
+
+def approve(argv: list[str] | None = None, input_fn=input, is_tty=None) -> None:
+    """Record a person's decision on a gate the run is waiting for (async gates). Interactive only."""
+    from agentic_sdlc.gates import files as gate_files
+    from agentic_sdlc.gates.human import ask, print_request
+    from agentic_sdlc.state import GateDecision
+
+    parser = argparse.ArgumentParser(description="Approve or reject a gate of a waiting run")
+    parser.add_argument("run_id")
+    parser.add_argument("gate", help="Gate id, e.g. G1")
+    parser.add_argument("--as", dest="approver", required=True, help="Your name (recorded on the decision)")
+    parser.add_argument("--role", default="", help="e.g. product owner, architect, developer of record")
+    args = parser.parse_args(argv)
+    if not (is_tty if is_tty is not None else sys.stdin.isatty()):
+        raise SystemExit("Gates are approved by a person at an interactive terminal; run this yourself.")
+    if os.environ.get("CLAUDECODE") or os.environ.get("SDLC_AGENT"):
+        raise SystemExit("This looks like an agent session; gates are approved by people in their own terminal.")
+    problem = gate_files.approver_problem(args.approver)
+    if problem:
+        raise SystemExit(problem)
+    ws = Workspace.open(args.run_id)
+    gid = args.gate.upper()
+    pending = gate_files.read_pending(ws.root, gid)
+    if pending is None:
+        raise SystemExit(f"Run {args.run_id} is not waiting for {gid}.")
+    changed = gate_files.changed_since(ws.root, pending["artifact_hashes"])
+    if changed:
+        raise SystemExit(f"These documents changed since the gate was requested: {', '.join(changed)}. "
+                         f"Resume the run so it asks again.")
+    print_request(f"{gid} ({pending['gate']})", pending["summary"], [ws.root / d for d in pending["documents"]])
+    decision: GateDecision = ask(pending["gate"], input_fn, need_risk_note=pending["gate"] == "merge")
+    decision.gate_id, decision.approver, decision.role = gid, args.approver.strip(), args.role
+    decision.artifact_hashes = pending["artifact_hashes"]
+    gate_files.write_decision(ws.root, decision)
+    verdict = "approved" if decision.approved else "rejected"
+    print(f"{gid} {verdict} by {decision.approver}. Continue the run with:  uv run resume {args.run_id}")
+
+
+def deploy(argv: list[str] | None = None, input_fn=input, is_tty=None) -> None:
+    """Deploy an approved release to production. Only the person who approved G7, at an interactive terminal."""
+    from datetime import datetime
+
+    from agentic_sdlc.gates import files as gate_files
+    from agentic_sdlc.release import deploy as deploying
+    from agentic_sdlc.settings import load_config
+    from agentic_sdlc.state import ProjectState
+
+    parser = argparse.ArgumentParser(description="Deploy a release that G6 and G7 approved")
+    parser.add_argument("run_id")
+    parser.add_argument("--as", dest="approver", required=True, help="Your name; must be the person who approved G7")
+    args = parser.parse_args(argv)
+    if not (is_tty if is_tty is not None else sys.stdin.isatty()):
+        raise SystemExit("Deployment is started by a person at an interactive terminal; run this yourself.")
+    if os.environ.get("CLAUDECODE") or os.environ.get("SDLC_AGENT"):
+        raise SystemExit("This looks like an agent session; production is deployed by people in their own terminal.")
+    bad_name = gate_files.approver_problem(args.approver)
+    if bad_name:
+        raise SystemExit(bad_name)
+    ws = Workspace.open(args.run_id)
+    state = ProjectState.model_validate_json(ws.load_state_json())
+    release_cfg = (load_config(state.pipeline or "pipeline").get("release") or {}) if state.pipeline else {}
+    command = (release_cfg.get("production_command") or "").strip()
+    found = deploying.problems(state, ws.root, args.approver, command)
+    if found:
+        raise SystemExit("Not deploying:\n" + "\n".join(f"  - {p}" for p in found))
+    print(f"Run {args.run_id}: G6 and G7 approved, evidence intact.\nAbout to run in {ws.root}:\n  {command}")
+    if input_fn("Type DEPLOY to run it: ").strip() != "DEPLOY":
+        raise SystemExit("Cancelled; nothing was run.")
+    ok, log_text = deploying.run(ws.root, command, release_cfg.get("production_timeout_s", 1800))
+    ws.write_text("reports/production_deploy.log", f"{datetime.now().isoformat()} by {args.approver}\n$ {command}\n\n{log_text}")
+    state.release.production = "deployed" if ok else "failed"
+    state.release.production_notes += f"\nDeployed by {args.approver}." if ok else f"\nDeployment by {args.approver} failed."
+    ws.save_state(state)
+    ws.commit("Production deployment " + ("succeeded" if ok else "FAILED"), ["reports"])
+    print(("Deployed." if ok else "Deployment FAILED; see reports/production_deploy.log. Roll back with docs/release.md."))
+    if not ok:
+        raise SystemExit(1)
+
+
+def canary(argv: list[str] | None = None) -> None:
+    """Run the smallest end-to-end run (auto gates, never deploys) and judge it; exit 0 smooth, 1 failed, 2 not smooth."""
+    from datetime import datetime
+
+    from agentic_sdlc import canary as canary_check
+    from agentic_sdlc.state import ProjectState
+
+    parser = argparse.ArgumentParser(description="Run the canary: a tiny end-to-end run to check the framework")
+    parser.add_argument("--profile", default=DEFAULT_PROFILE)
+    parser.add_argument("--brief", type=Path, default=PROJECT_ROOT / "briefs" / "canary.md")
+    args = parser.parse_args(argv)
+    run_id = f"canary-{datetime.now():%Y%m%d-%H%M%S}"
+    start_run(args.brief, args.profile, run_id, "pipeline.canary")
+    ws = Workspace.open(run_id)
+    state = ProjectState.model_validate_json(ws.load_state_json())
+    verdict = canary_check.judge(state)
+    text = canary_check.report(run_id, verdict)
+    ws.write_text("reports/canary.md", text)
+    print("\n" + text)
+    raise SystemExit(verdict.exit_code)
+
+
+def rewind_cmd(argv: list[str] | None = None) -> None:
+    """Go back a step in a stopped run without editing state.json by hand."""
+    from agentic_sdlc import rewind as rw
+    from agentic_sdlc.registry.profiles import Profile
+    from agentic_sdlc.state import ProjectState
+
+    parser = argparse.ArgumentParser(description="Rewind a stopped run to an earlier step, keeping what is approved and built")
+    parser.add_argument("run_id")
+    parser.add_argument("--to", choices=list(rw.STEPS), help="; ".join(f"{k}: {v}" for k, v in rw.STEPS.items()))
+    parser.add_argument("--widen", metavar="TASK", help="give a task more owned paths (use with --paths); G2 asks again")
+    parser.add_argument("--paths", nargs="+", default=[], help="paths for --widen, e.g. app/lib/features/catalog/**")
+    args = parser.parse_args(argv)
+    if bool(args.to) == bool(args.widen):
+        raise SystemExit("Give exactly one of --to <step> or --widen <TASK> --paths ...")
+    ws = Workspace.open(args.run_id)
+    state = ProjectState.model_validate_json(ws.load_state_json())
+    if state.status == "running":
+        raise SystemExit("The run says it is running. Stop it first (or it crashed: resume it once, then rewind).")
+    profile = Profile.load(state.profile)
+    if args.widen:
+        if not args.paths:
+            raise SystemExit("--widen needs --paths")
+        workdirs = {n: c.workdir for n, c in profile.components.items()}
+        problems = rw.widen(state, ws.root, args.widen, args.paths, workdirs)
+        if problems:
+            raise SystemExit("Not widened:\n" + "\n".join(f"  - {p}" for p in problems))
+        message = f"{args.widen} now also owns {', '.join(args.paths)}"
+    else:
+        message = rw.apply(state, ws.root, profile, args.to)
+    ws.save_state(state)
+    ws.commit(f"Rewind: {message}")
+    print(f"{message}.\nContinue with:  uv run resume {args.run_id}")
+
+
+def mockups() -> None:
+    """Draw the UI/UX designer's screen mockups for an existing run (docs/ui/), without re-running it."""
+    from agentic_sdlc.flow import default_deps
+    from agentic_sdlc.state import ProjectState
+
+    parser = argparse.ArgumentParser(description="Draw screen mockups (HTML + PNG) for an existing run")
+    parser.add_argument("run_id")
+    parser.add_argument("--redraw", action="store_true", help="Draw every screen again, not only missing ones")
+    args = parser.parse_args()
+    ws = Workspace.open(args.run_id)
+    flow = SDLCFlow(restore_json=ws.load_state_json())
+    restored = ProjectState.model_validate_json(ws.load_state_json())
+    for name in ProjectState.model_fields:
+        if name != "id":
+            setattr(flow.state, name, getattr(restored, name))
+    if flow.state.design is None:
+        raise SystemExit("This run has no UI design yet (docs/ui-design.json): nothing to draw.")
+    flow._deps = default_deps(flow.state)
+    flow._deps.pipeline["design"] = {**(flow._deps.pipeline.get("design") or {}), "mockups": True}
+    flow._deps.pipeline.setdefault("phases", {})["design"] = True
+    if args.redraw:
+        flow.state.mockups = []
+    status, reason = flow.state.status, flow.state.stop_reason
+    flow.state.status = "running"          # drawing needs a running state; the run's own status is restored below
+    try:
+        flow._write_mockups("")
+    finally:
+        flow.state.status, flow.state.stop_reason = status, reason
+        ws.save_state(flow.state)
+    print(f"Mockups: {ws.root / 'docs/ui/index.html'}")
 
 
 def _apply_milestones(milestones: str | None) -> None:
