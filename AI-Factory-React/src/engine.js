@@ -165,6 +165,10 @@ export function advance(state, amount) {
     progresses[index] = 100;
     if (index === PM) {
       paces[PM] = 0;
+      if (decisions[PM]?.decision !== 'approved') {
+        statuses[PM] = 'awaiting';
+        holds[PM] = 0;
+      }
       continue;
     }
     if (gateIndexes.includes(index)) {
@@ -223,11 +227,21 @@ export function runReducer(state, action) {
       const paces = clonePaces(state);
       const revisited = state.revisited?.length === STAGE_COUNT ? state.revisited.slice() : Array(STAGE_COUNT).fill(false);
       const holds = cloneHolds(state);
+      const decisions = recordDecision({ ...(state.decisions || {}) }, index, 'approved', action.comment || '');
+      if (index === PM) {
+        statuses[PM] = 'active';
+        progresses[PM] = 100;
+        paces[PM] = 0;
+        revisited[PM] = true;
+        holds[PM] = 0;
+        releaseReadyStages(statuses, progresses, paces);
+        const active = focusIndex(statuses, progresses);
+        return { ...state, active, progress: progresses[active] ?? 0, statuses, progresses, paces, revisited, holds, decisions, approval: state.approval, paused: false, note: '', reviewing: false };
+      }
       statuses[index] = 'done';
       progresses[index] = 100;
       revisited[index] = true;
       holds[index] = 0;
-      const decisions = recordDecision({ ...(state.decisions || {}) }, index, 'approved', action.comment || '');
       const approval = index === GATE ? 'approved' : state.approval;
       if (releaseReadyStages(statuses, progresses, paces)) {
         statuses[PM] = 'done';

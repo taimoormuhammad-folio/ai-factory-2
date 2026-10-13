@@ -1,8 +1,11 @@
-export const gates = [
-  { index: 1, kind: 'spec', label: 'Review specification' },
-  { index: 2, kind: 'technical', label: 'Review technical specification' },
-  { index: 4, kind: 'design', label: 'Review mockups' },
-  { index: 9, kind: 'app', label: 'Review final app' },
+﻿export const gates = [
+  { index: 1, kind: 'spec', label: 'Review specification (G1)' },
+  { index: 2, kind: 'technical', label: 'Review architecture (G2)' },
+  { index: 3, kind: 'estimate', label: 'Review estimates (G3)' },
+  { index: 4, kind: 'design', label: 'Review design (G4)' },
+  { index: 7, kind: 'smoke', label: 'Review release (G6)' },
+  { index: 8, kind: 'deploy', label: 'Review merge (G5)' },
+  { index: 9, kind: 'app', label: 'Approve production (G7)' },
 ];
 
 export const gateIndexes = gates.map((gate) => gate.index);

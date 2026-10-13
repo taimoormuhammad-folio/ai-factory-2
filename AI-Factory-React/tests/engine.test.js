@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {initialRun,runReducer,overallProgress,validateFiles} from '../src/engine.js';
 
-function approveGates(state, indexes = [1, 2, 4, 9]) {
+function approveGates(state, indexes = [1, 2, 3, 4, 7, 8, 9]) {
   let next = state;
   for (const index of indexes) {
     if (next.statuses?.[index] === 'awaiting') next = runReducer(next, { type: 'approve', index });
@@ -96,7 +96,7 @@ test('gates wait for approval and a uiux rejection returns to the customer',()=>
   const approved=runReducer(s,{type:'approve',index:1});
   assert.equal(approved.statuses[1],'done');
   let design={...initialRun};
-  for(let i=0;i<800&&design.statuses[4]!=='awaiting';i++)design=approveGates(runReducer(design,{type:'tick',amount:4}),[1,2]);
+  for(let i=0;i<800&&design.statuses[4]!=='awaiting';i++)design=approveGates(runReducer(design,{type:'tick',amount:4}),[1,2,3]);
   let designHeld=design;
   for(let i=0;i<20;i++)designHeld=runReducer(designHeld,{type:'tick',amount:4});
   assert.equal(designHeld.statuses[4],'awaiting');

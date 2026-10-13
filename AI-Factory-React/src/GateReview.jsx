@@ -192,7 +192,36 @@ function SmokeReview() {
   );
 }
 
-const titles = { spec: 'Review specification', technical: 'Review technical specification', deploy: 'Review build', smoke: 'Review smoke tests', app: 'Review final app' };
+function EstimateReview() {
+  const sections = [
+    { title: 'Scope', items: ['Member workspace, item list and saved items', 'Billing and admin roles stay out of this release'] },
+    { title: 'Estimate', items: ['Design: 3 days', 'Frontend and backend together: 8 days', 'QA, release and production review: 3 days'] },
+    { title: 'Plan', items: ['UI/UX starts after this approval', 'Frontend and backend run together', 'QA sends fixes back before release'] },
+  ];
+  return (
+    <div className="gate-body">
+      <div className="gate-toolbar"><p>Review the estimate and plan before design starts.</p></div>
+      <div className="spec-list">
+        {sections.map((section) => (
+          <section key={section.title}>
+            <h3>{section.title}</h3>
+            {section.items.map((item) => <p key={item}>{item}</p>)}
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const titles = {
+  spec: 'Review specification (G1)',
+  technical: 'Review architecture (G2)',
+  estimate: 'Review estimates (G3)',
+  design: 'Review design (G4)',
+  deploy: 'Review merge (G5)',
+  smoke: 'Review release (G6)',
+  app: 'Approve production (G7)',
+};
 
 function DecisionNote({ decision }) {
   if (!decision?.history?.length) return null;
@@ -207,6 +236,7 @@ export function GateReview({ kind, project, settled, decision, onClose, onApprov
       <div className="modal-heading"><h2>{titles[kind]}</h2><button type="button" onClick={onClose} aria-label="Close dialog">×</button></div>
       {kind === 'spec' && <SpecReview project={project} />}
       {kind === 'technical' && <TechnicalReview />}
+      {kind === 'estimate' && <EstimateReview />}
       {kind === 'deploy' && <DeployReview />}
       {kind === 'smoke' && <SmokeReview />}
       {kind === 'app' && <FinalAppReview />}
